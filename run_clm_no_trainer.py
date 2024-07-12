@@ -497,7 +497,7 @@ def main():
     def as_tensor(examples):
         results={}
         results["labels"]=examples["labels"]
-        results["input_embeds"]=[torch.tensor(item) for item in examples["input_embeds"]]
+        results["input_embeds"]=torch.tensor(examples["input_embeds"])
         return results
     
     train_dataset  = Dataset.from_dict(as_tensor(raw_datasets["train"]))
@@ -505,11 +505,9 @@ def main():
 
     print("Read as tensors")
 
-    print(type(raw_datasets["train"]), type(train_dataset))
-
     # Log a few random samples from the training set:
-    for index in random.sample(range(len(train_dataset)), 3):
-        logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
+    #for index in random.sample(range(len(train_dataset)), 3):
+     #   logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
 
     # DataLoaders creation:
     train_dataloader = DataLoader(
@@ -519,6 +517,8 @@ def main():
         eval_dataset, collate_fn=default_data_collator, batch_size=args.per_device_eval_batch_size
     )
 
+    print(raw_datasets['train'][0]["labels"] )
+    print(train_dataset[0]["input_embeds"].shape) 
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
     no_decay = ["bias", "layer_norm.weight"]
@@ -637,7 +637,8 @@ def main():
             active_dataloader = train_dataloader
         for step, batch in enumerate(active_dataloader):
             with accelerator.accumulate(model):
-                outputs = model(**batch, )
+                print(batch.shape)
+                outputs = model(inputs_embeds=batch["input_embeds"] )
                 loss = outputs.loss
                 # We keep track of the loss at each epoch
                 if args.with_tracking:
