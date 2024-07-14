@@ -1,0 +1,29 @@
+{   
+    "name": "bookish-couscous CUDA",
+    "build": {
+        "context": "../..", 
+        "dockerfile": "../../Dockerfile" 
+    },
+    "runArgs": [
+        "--gpus", "all"
+    ],
+    "mounts": [
+        "source=${localEnv:HOME}/.cache/huggingface,target=/root/.cache/huggingface,type=bind,consistency=cached",
+        "source=${localEnv:HOME}/.config/gh,target=/root/.config/gh,type=bind,consistency=cached"
+    ],
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "GitHub.copilot",
+                "charliermarsh.ruff",
+                "ms-toolsai.jupyter-keymap"
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "/root/.pyenv/shims/python"
+            }
+        }
+    },
+    "postStartCommand": ["/bin/bash","scripts/local_setup.sh"]
+}

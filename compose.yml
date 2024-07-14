@@ -1,0 +1,21 @@
+services:
+  train-autoencoder:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - HF_TOKEN=$HF_TOKEN
+    volumes:
+      - $HOME/.cache/huggingface:/root/.cache/huggingface
+      - $HOME/.config:/root/.config
+      - ./:/workspace
+    working_dir: /workspace
+    command: >
+      python3 training.py
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
