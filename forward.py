@@ -40,22 +40,3 @@ outputs = mamba(input_ids=inputs["input_ids"], cache_params = cache, use_cache=T
 next_token_logits = outputs.logits[:, -1, :]
 next_token_id = torch.argmax(next_token_logits, dim=-1).unsqueeze(-1)
 tokenizer.decode(next_token_id[0])
-
-######################
-### Cache Training ###
-######################
-
-inputs = tokenizer(tokenizer.bos_token, return_tensors="pt").to("cuda")
-
-mamba.train()
-outputs = mamba(input_ids=inputs["input_ids"], cache_params = cache, use_cache=True)
-
-criterion = torch.nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(mamba.parameters(), lr=0.001)
-
-labels = tokenizer("Label", return_tensors="pt").to("cuda")
-optimizer.zero_grad()
-outputs = mamba(input_ids=inputs["input_ids"], cache_params = cache, use_cache=True, labels=labels["input_ids"])
-loss = outputs.loss
-loss.backward()
-optimizer.step()
