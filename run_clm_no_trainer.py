@@ -509,19 +509,23 @@ def main():
             active_dataloader = train_data
         '''
         bos_inputs = tokenizer.batch_encode_plus([tokenizer.bos_token]*4, return_tensors="pt").to("cuda")
-
+        chunk_size = 128
         for step, batch in enumerate(train_data):
             with accelerator.accumulate(model):
 
                 for step, batch in enumerate(train_data):
                     print(step)
                     step_loss = 0
-                    for idx in range(128):
+                    for idx in range(chunk_size):
                         print(idx)
                         labels = batch['input_ids'][:,idx:idx+1]
-                        outputs = model(input_ids =bos_inputs["input_ids"],
-                                            cache_params = batch['cache_params'],
-                                            labels=labels)
+                        if idx == 0:
+                            inputs = bos_inputs["input_ids"]
+                        else:
+                            inputs = batch['input_ids'][:,idx-1:idx].to("cuda")
+                        outputs = model(input_ids =inputs,
+                                                cache_params = batch['cache_params'],
+                                                labels=labels)
                         loss = outputs.loss
                         step_loss += loss
                     # We keep track of the loss at each epoch
