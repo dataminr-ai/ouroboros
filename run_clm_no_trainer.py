@@ -38,9 +38,10 @@ from accelerate.logging import get_logger
 from accelerate.utils import set_seed
 from datasets import load_dataset
 from huggingface_hub import HfApi
-from torch.utils.data import DataLoader
+#from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
-from datasets import Dataset, DatasetDict
+#from datasets import Dataset, DatasetDict
+import pickle
 
 import transformers
 from transformers import (
@@ -243,16 +244,6 @@ def parse_args():
     # Sanity checks
     if args.dataset_name is None and args.train_file is None and args.validation_file is None:
         raise ValueError("Need either a dataset name or a training/validation file.")
-    else:
-        if args.train_file is not None:
-            extension = args.train_file.split(".")[-1]
-            if extension not in ["csv", "json", "txt"]:
-                raise ValueError("`train_file` should be a csv, json or txt file.")
-        if args.validation_file is not None:
-            extension = args.validation_file.split(".")[-1]
-            if extension not in ["csv", "json", "txt"]:
-                raise ValueError("`validation_file` should be a csv, json or txt file.")
-
     if args.push_to_hub:
         if args.output_dir is None:
             raise ValueError("Need an `output_dir` to create a repo when `--push_to_hub` is passed.")
@@ -344,35 +335,9 @@ def main():
                 trust_remote_code=args.trust_remote_code,
             )
     else:
-        data_files = {}
-        dataset_args = {}
         if args.train_file is not None:
-            data_files["train"] = args.train_file
-            extension = args.train_file.split(".")[-1]
-        if args.validation_file is not None:
-            data_files["validation"] = args.validation_file
-            extension = args.validation_file.split(".")[-1]
-        if extension == "txt":
-            extension = "text"
-            dataset_args["keep_linebreaks"] = not args.no_keep_linebreaks
-        raw_datasets = load_dataset(extension, data_files=data_files, **dataset_args)
-        # If no validation data is there, validation_split_percentage will be used to divide the dataset.
-        if "validation" not in raw_datasets.keys():
-            raw_datasets["validation"] = load_dataset(
-                extension,
-                data_files=data_files,
-                split=f"train[:{args.validation_split_percentage}%]",
-                **dataset_args,
-            )
-            raw_datasets["train"] = load_dataset(
-                extension,
-                data_files=data_files,
-                split=f"train[{args.validation_split_percentage}%:]",
-                **dataset_args,
-            )
-
-    # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
-    # https://huggingface.co/docs/datasets/loading_datasets.
+            with open("encoded_training_subset.pkl", "rb") as file:
+                train_data = pickle.load(file)
 
     # Load pretrained model and tokenizer
     #
@@ -424,101 +389,6 @@ def main():
     if len(tokenizer) > embedding_size:
         model.resize_token_embeddings(len(tokenizer))
 
-    # Preprocessing the datasets.
-    # First we tokenize all the texts.
-    column_names = raw_datasets["train"].column_names
-    text_column_name = "text" if "text" in column_names else column_names[0]
-
-    '''
-    def tokenize_function(examples):
-        return tokenizer(examples[text_column_name])
-
-    with accelerator.main_process_first():
-        tokenized_datasets = raw_datasets.map(
-            tokenize_function,
-            batched=True,
-            num_proc=args.preprocessing_num_workers,
-            remove_columns=column_names,
-            load_from_cache_file=not args.overwrite_cache,
-            desc="Running tokenizer on dataset",
-        )
-
-    if args.block_size is None:
-        block_size = tokenizer.model_max_length
-        if block_size > config.max_position_embeddings:
-            logger.warning(
-                f"The tokenizer picked seems to have a very large `model_max_length` ({tokenizer.model_max_length}). "
-                f"Using block_size={min(1024, config.max_position_embeddings)} instead. You can change that default value by passing --block_size xxx."
-            )
-            block_size = min(1024, config.max_position_embeddings)
-    else:
-        if args.block_size > tokenizer.model_max_length:
-            logger.warning(
-                f"The block_size passed ({args.block_size}) is larger than the maximum length for the model "
-                f"({tokenizer.model_max_length}). Using block_size={tokenizer.model_max_length}."
-            )
-        block_size = min(args.block_size, tokenizer.model_max_length)
-
-    # Main data processing function that will concatenate all texts from our dataset and generate chunks of block_size.
-    def group_texts(examples):
-        # Concatenate all texts.
-        concatenated_examples = {k: list(chain(*examples[k])) for k in examples.keys()}
-        total_length = len(concatenated_examples[list(examples.keys())[0]])
-        # We drop the small remainder, and if the total_length < block_size  we exclude this batch and return an empty dict.
-        # We could add padding if the model supported it instead of this drop, you can customize this part to your needs.
-        total_length = (total_length // block_size) * block_size
-        # Split by chunks of max_len.
-        result = {
-            k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
-            for k, t in concatenated_examples.items()
-        }
-        result["labels"] = result["input_ids"].copy()
-        return result
-
-    # Note that with `batched=True`, this map processes 1,000 texts together, so group_texts throws away a remainder
-    # for each of those groups of 1,000 texts. You can adjust that batch_size here but a higher value might be slower
-    # to preprocess.
-    #
-    # To speed up this part, we use multiprocessing. See the documentation of the map method for more information:
-    # https://huggingface.co/docs/datasets/process#map
-
-    with accelerator.main_process_first():
-        lm_datasets = tokenized_datasets.map(
-            group_texts,
-            batched=True,
-            num_proc=args.preprocessing_num_workers,
-            load_from_cache_file=not args.overwrite_cache,
-            desc=f"Grouping texts in chunks of {block_size}",
-        )
-
-    train_dataset = lm_datasets["train"]
-    eval_dataset = lm_datasets["validation"]
-'''
-    def as_tensor(examples):
-        results={}
-        results["labels"]=examples["labels"]
-        results["input_embeds"]=torch.tensor(examples["input_embeds"])
-        return results
-    
-    train_dataset  = Dataset.from_dict(as_tensor(raw_datasets["train"]))
-    eval_dataset  = Dataset.from_dict(as_tensor(raw_datasets["validation"]))
-
-    print("Read as tensors")
-
-    # Log a few random samples from the training set:
-    #for index in random.sample(range(len(train_dataset)), 3):
-     #   logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
-
-    # DataLoaders creation:
-    train_dataloader = DataLoader(
-        train_dataset, shuffle=True, collate_fn=default_data_collator, batch_size=args.per_device_train_batch_size
-    )
-    eval_dataloader = DataLoader(
-        eval_dataset, collate_fn=default_data_collator, batch_size=args.per_device_eval_batch_size
-    )
-
-    print(raw_datasets['train'][0]["labels"] )
-    print(train_dataset[0]["input_embeds"].shape) 
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
     no_decay = ["bias", "layer_norm.weight"]
@@ -536,7 +406,7 @@ def main():
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+    num_update_steps_per_epoch = math.ceil(len(train_data) / args.gradient_accumulation_steps)
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
@@ -551,8 +421,8 @@ def main():
     )
 
     # Prepare everything with our `accelerator`.
-    model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
-        model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
+    model, optimizer, train_data, lr_scheduler = accelerator.prepare(
+        model, optimizer, train_data, lr_scheduler
     )
 
     # On TPU, the tie weights in our model have been disconnected, so we need to restore the ties.
@@ -560,7 +430,7 @@ def main():
         model.tie_weights()
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+    num_update_steps_per_epoch = math.ceil(len(train_data) / args.gradient_accumulation_steps)
     if overrode_max_train_steps:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
     # Afterwards we recalculate our number of training epochs
@@ -583,7 +453,8 @@ def main():
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
-    logger.info(f"  Num examples = {len(train_dataset)}")
+    #logger.info(f"  Num examples = {len(train_data)}")
+    logger.info(f"  Num batches = {len(train_data)}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {args.per_device_train_batch_size}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
@@ -619,9 +490,9 @@ def main():
         else:
             # need to multiply `gradient_accumulation_steps` to reflect real steps
             resume_step = int(training_difference.replace("step_", "")) * args.gradient_accumulation_steps
-            starting_epoch = resume_step // len(train_dataloader)
+            starting_epoch = resume_step // len(train_data)
             completed_steps = resume_step // args.gradient_accumulation_steps
-            resume_step -= starting_epoch * len(train_dataloader)
+            resume_step -= starting_epoch * len(train_data)
 
     # update the progress_bar if load from checkpoint
     progress_bar.update(completed_steps)
@@ -630,41 +501,63 @@ def main():
         model.train()
         if args.with_tracking:
             total_loss = 0
+        '''
         if args.resume_from_checkpoint and epoch == starting_epoch and resume_step is not None:
             # We skip the first `n` batches in the dataloader when resuming from a checkpoint
-            active_dataloader = accelerator.skip_first_batches(train_dataloader, resume_step)
+            active_dataloader = accelerator.skip_first_batches(train_data, resume_step)
         else:
-            active_dataloader = train_dataloader
-        for step, batch in enumerate(active_dataloader):
-            with accelerator.accumulate(model):
-                print(batch.shape)
-                outputs = model(inputs_embeds=batch["input_embeds"] )
-                loss = outputs.loss
-                # We keep track of the loss at each epoch
-                if args.with_tracking:
-                    total_loss += loss.detach().float()
-                accelerator.backward(loss)
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
+            active_dataloader = train_data
+        '''
+        bos_inputs = tokenizer.batch_encode_plus([tokenizer.bos_token]*4, return_tensors="pt").to("cuda")
+        chunk_size = 128
+        losses = []
+        for step, batch in enumerate(train_data):
+            if step < 303:
+                with accelerator.accumulate(model):
+                    print(step)
+                    step_loss = 0
+                    for idx in range(chunk_size):
+                        labels = batch['input_ids'][:,idx:idx+1]
+                        if idx == 0:
+                            inputs = bos_inputs["input_ids"]
+                            cache_params = batch['cache_params']
+                        else:
+                            inputs = batch['input_ids'][:,idx-1:idx].to("cuda")
+                        
+                        outputs = model(input_ids =inputs,
+                                            cache_params = cache_params,
+                                            labels=labels,
+                                            return_dict=True)
+                        cache_params = outputs.cache_params
+                        loss = outputs.loss
+                        step_loss += loss
+                        print(loss)
+                    # We keep track of the loss at each epoch
+                    if args.with_tracking:
+                        total_loss += step_loss.detach().float()
+                    accelerator.backward(step_loss)
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
+                losses.append(step_loss)
+                # Checks if the accelerator has performed an optimization step behind the scenes
+                if accelerator.sync_gradients:
+                    progress_bar.update(1)
+                    completed_steps += 1
 
-            # Checks if the accelerator has performed an optimization step behind the scenes
-            if accelerator.sync_gradients:
-                progress_bar.update(1)
-                completed_steps += 1
-
-            if isinstance(checkpointing_steps, int):
-                if completed_steps % checkpointing_steps == 0:
-                    output_dir = f"step_{completed_steps}"
-                    if args.output_dir is not None:
-                        output_dir = os.path.join(args.output_dir, output_dir)
-                    accelerator.save_state(output_dir)
-            if completed_steps >= args.max_train_steps:
-                break
-
+                if isinstance(checkpointing_steps, int):
+                    if completed_steps % checkpointing_steps == 0:
+                        output_dir = f"step_{completed_steps}"
+                        if args.output_dir is not None:
+                            output_dir = os.path.join(args.output_dir, output_dir)
+                        accelerator.save_state(output_dir)
+                if completed_steps >= args.max_train_steps:
+                    break
+        
+        
         model.eval()
         losses = []
-        for step, batch in enumerate(eval_dataloader):
+        for step, batch in enumerate(eval_data):
             with torch.no_grad():
                 outputs = model(**batch)
 
@@ -685,7 +578,7 @@ def main():
                 {
                     "perplexity": perplexity,
                     "eval_loss": eval_loss,
-                    "train_loss": total_loss.item() / len(train_dataloader),
+                    "train_loss": total_loss.item() / len(train_data),
                     "epoch": epoch,
                     "step": completed_steps,
                 },
@@ -735,7 +628,6 @@ def main():
                 )
             with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
                 json.dump({"perplexity": perplexity}, f)
-
-
+    
 if __name__ == "__main__":
     main()
