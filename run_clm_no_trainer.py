@@ -38,9 +38,9 @@ from accelerate.logging import get_logger
 from accelerate.utils import set_seed
 from datasets import load_dataset
 from huggingface_hub import HfApi
-from torch.utils.data import DataLoader
+#from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
-from datasets import Dataset, DatasetDict
+#from datasets import Dataset, DatasetDict
 import pickle
 
 import transformers
@@ -510,24 +510,28 @@ def main():
         '''
         bos_inputs = tokenizer.batch_encode_plus([tokenizer.bos_token]*4, return_tensors="pt").to("cuda")
         chunk_size = 128
+        losses = []
         for step, batch in enumerate(train_data):
-            with accelerator.accumulate(model):
-
-                for step, batch in enumerate(train_data):
+            if step < 303:
+                with accelerator.accumulate(model):
                     print(step)
                     step_loss = 0
                     for idx in range(chunk_size):
-                        print(idx)
                         labels = batch['input_ids'][:,idx:idx+1]
                         if idx == 0:
                             inputs = bos_inputs["input_ids"]
+                            cache_params = batch['cache_params']
                         else:
                             inputs = batch['input_ids'][:,idx-1:idx].to("cuda")
+                        
                         outputs = model(input_ids =inputs,
-                                                cache_params = batch['cache_params'],
-                                                labels=labels)
+                                            cache_params = cache_params,
+                                            labels=labels,
+                                            return_dict=True)
+                        cache_params = outputs.cache_params
                         loss = outputs.loss
                         step_loss += loss
+                        print(loss)
                     # We keep track of the loss at each epoch
                     if args.with_tracking:
                         total_loss += step_loss.detach().float()
@@ -535,24 +539,25 @@ def main():
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
+                losses.append(step_loss)
+                # Checks if the accelerator has performed an optimization step behind the scenes
+                if accelerator.sync_gradients:
+                    progress_bar.update(1)
+                    completed_steps += 1
 
-            # Checks if the accelerator has performed an optimization step behind the scenes
-            if accelerator.sync_gradients:
-                progress_bar.update(1)
-                completed_steps += 1
-
-            if isinstance(checkpointing_steps, int):
-                if completed_steps % checkpointing_steps == 0:
-                    output_dir = f"step_{completed_steps}"
-                    if args.output_dir is not None:
-                        output_dir = os.path.join(args.output_dir, output_dir)
-                    accelerator.save_state(output_dir)
-            if completed_steps >= args.max_train_steps:
-                break
-
+                if isinstance(checkpointing_steps, int):
+                    if completed_steps % checkpointing_steps == 0:
+                        output_dir = f"step_{completed_steps}"
+                        if args.output_dir is not None:
+                            output_dir = os.path.join(args.output_dir, output_dir)
+                        accelerator.save_state(output_dir)
+                if completed_steps >= args.max_train_steps:
+                    break
+        
+        
         model.eval()
         losses = []
-        for step, batch in enumerate(eval_dataloader):
+        for step, batch in enumerate(eval_data):
             with torch.no_grad():
                 outputs = model(**batch)
 
@@ -573,7 +578,7 @@ def main():
                 {
                     "perplexity": perplexity,
                     "eval_loss": eval_loss,
-                    "train_loss": total_loss.item() / len(train_dataloader),
+                    "train_loss": total_loss.item() / len(train_data),
                     "epoch": epoch,
                     "step": completed_steps,
                 },
@@ -623,7 +628,6 @@ def main():
                 )
             with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
                 json.dump({"perplexity": perplexity}, f)
-
-
+    
 if __name__ == "__main__":
     main()

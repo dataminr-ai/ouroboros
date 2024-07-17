@@ -8,15 +8,13 @@
         "--gpus", "all"
     ],
     "mounts": [
-        "source=${localEnv:HOME}/.cache/huggingface,target=/root/.cache/huggingface,type=bind,consistency=cached",
-        "source=${localEnv:HOME}/.config/gh,target=/root/.config/gh,type=bind,consistency=cached"
+        "source=${localEnv:HOME}/.cache/huggingface,target=/root/.cache/huggingface,type=bind,consistency=cached"
     ],
     "customizations": {
         "vscode": {
             "extensions": [
                 "ms-python.python",
                 "ms-python.vscode-pylance",
-                "GitHub.copilot",
                 "charliermarsh.ruff",
                 "ms-toolsai.jupyter-keymap"
             ],
