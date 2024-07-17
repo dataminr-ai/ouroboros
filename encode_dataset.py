@@ -1,15 +1,9 @@
-from transformers import MambaConfig, MambaForCausalLM, AutoTokenizer
+import argparse
+from transformers import MambaForCausalLM, AutoTokenizer
 import torch
 import json
-from torch.utils.data import DataLoader
-from datasets import Dataset
 import pickle
 
-def get_hidden_states(text, model, tokenizer):
-    inputs = tokenizer(text, return_tensors="pt").to("cuda")
-    outputs = model(inputs["input_ids"], output_hidden_states = True)
-    hidden_states = outputs.cache_params  
-    return hidden_states
 
 def read_dataset(filename):
     texts = []
@@ -19,66 +13,121 @@ def read_dataset(filename):
             texts.append(data["text"])
     return texts
 
-def encode_dataset(dataset):
-    hidden_states=[]
-    labels=[]
-    for idx, text in enumerate(dataset):
-        print(idx)
-        hidden_state= get_hidden_states(text[:50], model, tokenizer)
-        hidden_states.append(hidden_state)
-        labels.append(text[:50])
-    encoded_dataset = {'cache_params': hidden_states, 'labels': labels}
-    return encoded_dataset
 
-class EncodedDataset(Dataset):
-    def __init__(self, encoded_dataset):
-        self.encodings = encoded_dataset["cache_params"]
-        self.labels = encoded_dataset["labels"]
-    def __getitem__(self, idx):
-        item = {}
-        item["cache_params"] = self.encodings[idx]
-        item["labels"] = self.labels[idx]
-        return item
-    def __len__(self):
-        return len(self.labels)
+def tokenize_dataset(dataset, tokenizer):
+    tokenized = []
+    for item in dataset:
+        tokens = tokenizer(item, return_tensors="pt")
+        tokenized.append(tokens)
+    return tokenized
 
-model_id = "state-spaces/mamba-130m-hf"
-tokenizer = AutoTokenizer.from_pretrained(model_id)
-model = MambaForCausalLM.from_pretrained(model_id, torch_dtype=torch.float16)
-model.cuda()
 
-dataset = read_dataset("train_subset.jsonl")
-encoded_dataset = encode_dataset(dataset)
-
-# Save encoded_dataset as pickle file
-with open("encoded_training_subset.pkl", "wb") as f:
-    pickle.dump(encoded_dataset, f)
-
-#########################
-##### Batch Encode ######
-#########################
-'''
-from accelerate import Accelerator, DistributedType
-
-accelerator = Accelerator()
-text_column_name = 'text'
-'''
-
-block_size=model.config.max_position_embeddings
-
-# Main data processing function that will concatenate all texts from our dataset and generate chunks of block_size.
-def group_texts(examples):
-    # Concatenate all texts.
-    concatenated_examples = {k: list(chain(*examples[k])) for k in examples.keys()}
-    total_length = len(concatenated_examples[list(examples.keys())[0]])
-    # We drop the small remainder, and if the total_length < block_size  we exclude this batch and return an empty dict.
-    # We could add padding if the model supported it instead of this drop, you can customize this part to your needs.
-    total_length = (total_length // block_size) * block_size
-    # Split by chunks of max_len.
-    result = {
-        k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
-        for k, t in concatenated_examples.items()
+def chunk_dataset(tokenized_dataset, block_size):
+    concatenated_input_ids = torch.cat(
+        [tokens["input_ids"][0] for tokens in tokenized_dataset], dim=0
+    )
+    concatenated_attention_masks = torch.cat(
+        [tokens["attention_mask"][0] for tokens in tokenized_dataset], dim=0
+    )
+    total_length = len(concatenated_input_ids)
+    chunks = {
+        "input_ids": [
+            concatenated_input_ids[i : i + block_size]
+            for i in range(0, total_length, block_size)
+        ],
+        "attention_mask": [
+            concatenated_attention_masks[i : i + block_size]
+            for i in range(0, total_length, block_size)
+        ],
     }
-    return result
+    # Add padding for last chunk if less than block_size
+    if len(chunks["input_ids"][-1]) < block_size:
+        padding_length = block_size - len(chunks["input_ids"][-1])
+        chunks["input_ids"][-1] = torch.cat(
+            [chunks["input_ids"][-1], torch.zeros(padding_length, dtype=torch.long)]
+        )  # pad_token_id is 0
+        chunks["attention_mask"][-1] = torch.cat(
+            [
+                chunks["attention_mask"][-1],
+                torch.zeros(padding_length, dtype=torch.long),
+            ]
+        )
+    return chunks
 
 
+def batch_chunks(chunked_dataset, batch_size):
+    total_chunks = len(chunked_dataset["input_ids"])
+    batched_chunks = []
+    for i in range(0, total_chunks, batch_size):
+        batched_chunks.append(
+            {
+                "input_ids": torch.stack(
+                    chunked_dataset["input_ids"][i : i + batch_size]
+                ),
+                "attention_mask": torch.stack(
+                    chunked_dataset["attention_mask"][i : i + batch_size]
+                ),
+            }
+        )
+    return batched_chunks
+
+
+def get_cache_params(batch, model):
+    outputs = model(batch, output_hidden_states=True, use_cache=True, return_dict=True)
+    hidden_states = outputs.cache_params
+    return hidden_states
+
+
+def main(input_file, model_id, chunk_size, batch_size, output_file):
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = MambaForCausalLM.from_pretrained(model_id)
+    model.cuda()
+
+    raw_dataset = read_dataset(input_file)
+    tokenized_dataset = tokenize_dataset(raw_dataset, tokenizer)
+    chunked_dataset = chunk_dataset(tokenized_dataset, chunk_size)
+    batched_chunks = batch_chunks(
+        chunked_dataset, batch_size
+    )  # batched_chunks[batch_number]['input_ids'][instance_number]
+
+    encoded_dataset = batched_chunks.copy()
+    for idx, batch in enumerate(batched_chunks):
+        print(idx)
+        with torch.no_grad():
+            input_ids = batch["input_ids"].to("cuda")
+            hidden_states = get_cache_params(input_ids, model)
+            encoded_dataset[idx]["cache_params"] = hidden_states
+        del hidden_states, input_ids
+        torch.cuda.empty_cache()
+
+    # Save encoded_dataset as pickle file
+    with open(output_file, "wb") as f:
+        pickle.dump(encoded_dataset, f)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Process dataset and get hidden states."
+    )
+    parser.add_argument(
+        "--input_file", type=str, required=True, help="Input dataset filename (jsonl)"
+    )
+    parser.add_argument("--model_id", type=int, required=True, help="Model ID")
+    parser.add_argument(
+        "--output_file", type=str, required=True, help="Output dataset filename (pkl)"
+    )
+    parser.add_argument(
+        "--chunk_size", type=int, required=True, help="Size of each chunk"
+    )
+    parser.add_argument(
+        "--batch_size", type=int, required=True, help="Size of each batch"
+    )
+    args = parser.parse_args()
+
+    main(
+        args.input_file,
+        args.model_id,
+        args.chunk_size,
+        args.batch_size,
+        args.output_file,
+    )
