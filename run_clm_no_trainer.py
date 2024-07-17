@@ -42,6 +42,7 @@ from huggingface_hub import HfApi
 from tqdm.auto import tqdm
 #from datasets import Dataset, DatasetDict
 import pickle
+import torch.nn.functional as F
 
 import transformers
 from transformers import (
@@ -512,49 +513,47 @@ def main():
         chunk_size = 128
         losses = []
         for step, batch in enumerate(train_data):
-            if step < 303:
-                with accelerator.accumulate(model):
-                    print(step)
-                    step_loss = 0
-                    for idx in range(chunk_size):
-                        labels = batch['input_ids'][:,idx:idx+1]
-                        if idx == 0:
-                            inputs = bos_inputs["input_ids"]
-                            cache_params = batch['cache_params']
-                        else:
-                            inputs = batch['input_ids'][:,idx-1:idx].to("cuda")
-                        
-                        outputs = model(input_ids =inputs,
-                                            cache_params = cache_params,
-                                            labels=labels,
-                                            return_dict=True)
-                        cache_params = outputs.cache_params
-                        loss = outputs.loss
-                        step_loss += loss
-                        print(loss)
-                    # We keep track of the loss at each epoch
-                    if args.with_tracking:
-                        total_loss += step_loss.detach().float()
-                    accelerator.backward(step_loss)
+            with accelerator.accumulate(model):
+                step_loss = 0
+                for idx in range(chunk_size):
+                    labels = batch['input_ids'][:,idx:idx+1].squeeze().to('cuda')
+                    if idx == 0:
+                        inputs = bos_inputs["input_ids"]
+                        cache_params = batch['cache_params']
+                    else:
+                        inputs = batch['input_ids'][:,idx-1:idx].to("cuda")
+                    
+                    outputs = model(input_ids =inputs,
+                                        cache_params = cache_params,
+                                        return_dict=True)
+                    cache_params = outputs.cache_params
+                    next_token_logits = outputs.logits[:, -1, :]
+                    loss = F.cross_entropy(next_token_logits, labels)
+                    losses.append(loss)
+                    accelerator.backward(loss)
                     optimizer.step()
                     lr_scheduler.step()
-                    optimizer.zero_grad()
-                losses.append(step_loss)
-                # Checks if the accelerator has performed an optimization step behind the scenes
-                if accelerator.sync_gradients:
-                    progress_bar.update(1)
-                    completed_steps += 1
+                    step_loss += loss
+                # We keep track of the loss at each epoch
+                if args.with_tracking:
+                    total_loss += step_loss.detach().float()
+                optimizer.zero_grad()
+            
+            # Checks if the accelerator has performed an optimization step behind the scenes
+            if accelerator.sync_gradients:
+                progress_bar.update(1)
+                completed_steps += 1
 
-                if isinstance(checkpointing_steps, int):
-                    if completed_steps % checkpointing_steps == 0:
-                        output_dir = f"step_{completed_steps}"
-                        if args.output_dir is not None:
-                            output_dir = os.path.join(args.output_dir, output_dir)
-                        accelerator.save_state(output_dir)
-                if completed_steps >= args.max_train_steps:
-                    break
+            if isinstance(checkpointing_steps, int):
+                if completed_steps % checkpointing_steps == 0:
+                    output_dir = f"step_{completed_steps}"
+                    if args.output_dir is not None:
+                        output_dir = os.path.join(args.output_dir, output_dir)
+                    accelerator.save_state(output_dir)
+            if completed_steps >= args.max_train_steps:
+                break
         
-        
+        '''
         model.eval()
         losses = []
         for step, batch in enumerate(eval_data):
@@ -628,6 +627,9 @@ def main():
                 )
             with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
                 json.dump({"perplexity": perplexity}, f)
+                '''
+    with open("losses.pkl", "wb") as f:
+        pickle.dump(losses, f)
     
 if __name__ == "__main__":
     main()
