@@ -112,7 +112,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--input_file", type=str, required=True, help="Input dataset filename (jsonl)"
     )
-    parser.add_argument("--model_id", type=int, required=True, help="Model ID")
+    parser.add_argument("--model_id", type=str, required=True, help="Model ID")
     parser.add_argument(
         "--output_file", type=str, required=True, help="Output dataset filename (pkl)"
     )
