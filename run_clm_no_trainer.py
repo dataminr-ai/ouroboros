@@ -68,7 +68,7 @@ require_version("datasets>=2.14.0", "To fix: pip install -r examples/pytorch/lan
 
 MODEL_CONFIG_CLASSES = list(MODEL_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
-
+torch.autograd.set_detect_anomaly(True)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Finetune a transformers model on a causal language modeling task")
@@ -337,8 +337,11 @@ def main():
             )
     else:
         if args.train_file is not None:
-            with open("encoded_training_subset.pkl", "rb") as file:
+            with open(args.train_file, "rb") as file:
                 train_data = pickle.load(file)
+        if args.validation_file is not None:
+            with open(args.validation_file, "rb") as file:
+                eval_data = pickle.load(file)
 
     # Load pretrained model and tokenizer
     #
@@ -511,33 +514,35 @@ def main():
         '''
         bos_inputs = tokenizer.batch_encode_plus([tokenizer.bos_token]*4, return_tensors="pt").to("cuda")
         chunk_size = 128
-        losses = []
+        train_losses = []
         for step, batch in enumerate(train_data):
             with accelerator.accumulate(model):
-                step_loss = 0
-                for idx in range(chunk_size):
-                    labels = batch['input_ids'][:,idx:idx+1].squeeze().to('cuda')
-                    if idx == 0:
-                        inputs = bos_inputs["input_ids"]
-                        cache_params = batch['cache_params']
-                    else:
-                        inputs = batch['input_ids'][:,idx-1:idx].to("cuda")
-                    
-                    outputs = model(input_ids =inputs,
-                                        cache_params = cache_params,
-                                        return_dict=True)
-                    cache_params = outputs.cache_params
-                    next_token_logits = outputs.logits[:, -1, :]
-                    loss = F.cross_entropy(next_token_logits, labels)
-                    losses.append(loss)
-                    accelerator.backward(loss)
-                    optimizer.step()
-                    lr_scheduler.step()
-                    step_loss += loss
+                inputs = batch['input_ids'].to("cuda")
+                cache_params = batch['cache_params']
+                outputs = model(input_ids =inputs,
+                                    cache_params = cache_params,
+                                    use_cache=True,
+                                    return_dict=True,
+                                    labels = inputs)
+                del cache_params
+                torch.cuda.empty_cache()
+                cache_params = outputs.cache_params
+
+                loss = outputs.loss
+                train_losses.append(loss)
+                accelerator.backward(loss)
+                optimizer.step()
+                lr_scheduler.step()
+
+                del inputs, outputs, loss
+                torch.cuda.empty_cache()
+                
                 # We keep track of the loss at each epoch
                 if args.with_tracking:
-                    total_loss += step_loss.detach().float()
+                    total_loss += loss.detach().float()
                 optimizer.zero_grad()
+                with open("train_losses.pkl", "wb") as f:
+                    pickle.dump(train_losses, f)
             
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -553,12 +558,18 @@ def main():
             if completed_steps >= args.max_train_steps:
                 break
         
-        '''
+        
         model.eval()
         losses = []
         for step, batch in enumerate(eval_data):
             with torch.no_grad():
-                outputs = model(**batch)
+                inputs = batch['input_ids'].to("cuda")
+                cache_params = batch['cache_params']
+                outputs = model(input_ids =inputs,
+                                    cache_params = cache_params,
+                                    use_cache=True,
+                                    return_dict=True,
+                                    labels = inputs)
 
             loss = outputs.loss
             losses.append(accelerator.gather_for_metrics(loss.repeat(args.per_device_eval_batch_size)))
@@ -567,6 +578,7 @@ def main():
         try:
             eval_loss = torch.mean(losses)
             perplexity = math.exp(eval_loss)
+            print('Eval Losses, Perplexity:', eval_loss, perplexity)
         except OverflowError:
             perplexity = float("inf")
 
@@ -627,9 +639,7 @@ def main():
                 )
             with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
                 json.dump({"perplexity": perplexity}, f)
-                '''
-    with open("losses.pkl", "wb") as f:
-        pickle.dump(losses, f)
+                
     
 if __name__ == "__main__":
     main()
