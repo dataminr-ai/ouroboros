@@ -60,7 +60,7 @@ from transformers.utils.versions import require_version
 
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
-check_min_version("4.43.0.dev0")
+#check_min_version("4.43.0.dev0")
 
 logger = get_logger(__name__)
 
@@ -349,15 +349,14 @@ def main():
     checkpointing_steps = args.checkpointing_steps
     if checkpointing_steps is not None and checkpointing_steps.isdigit():
         checkpointing_steps = int(checkpointing_steps)
-    model.cuda()
-    for epoch in range(0, args.num_train_epochs):
-        model.train()
-        if args.with_tracking:
-            total_loss = 0
 
-        train_losses = []
+    model.train()
+    model.cuda()
+
+    for epoch in range(0, args.num_train_epochs):
+          
         for step, batch in enumerate(train_data):
-            print(step)
+            print('Step: ', step)
             inputs = batch['input_ids'].to("cuda")
             cache_params = batch['cache_params']
             outputs = model(input_ids =inputs,
@@ -365,22 +364,17 @@ def main():
                                 use_cache=True,
                                 return_dict=True,
                                 labels = inputs)
-            del cache_params
-            torch.cuda.empty_cache()
-            cache_params = outputs.cache_params
 
             loss = outputs.loss
-            train_losses.append(loss.detach().float())
+
+            print('Loss: ', loss.item())
+            print('Memory: ', torch.cuda.memory_allocated())
+            print('\n\n')
+
             loss.backward()
             optimizer.step()
-            lr_scheduler.step()
-
-            del inputs, outputs, loss
-            torch.cuda.empty_cache()            
-            
+            lr_scheduler.step()  
             optimizer.zero_grad()
-            with open("train_losses.pkl", "wb") as f:
-                pickle.dump(train_losses, f)
             
             completed_steps = step + 1
             if isinstance(checkpointing_steps, int):
@@ -391,25 +385,6 @@ def main():
                     model.save_pretrained(output_dir)
             if completed_steps >= args.max_train_steps:
                 break
-        
-        '''
-        model.eval()
-        losses = []
-        for step, batch in enumerate(eval_data):
-            with torch.no_grad():
-                inputs = batch['input_ids'].to("cuda")
-                cache_params = batch['cache_params']
-                outputs = model(input_ids =inputs,
-                                    cache_params = cache_params,
-                                    use_cache=True,
-                                    return_dict=True,
-                                    labels = inputs)
-
-            loss = outputs.loss
-            losses.append(accelerator.gather_for_metrics(loss.repeat(args.per_device_eval_batch_size)))
-
-        losses = torch.cat(losses)
-        '''
-    
+            
 if __name__ == "__main__":
     main()
