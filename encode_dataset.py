@@ -1,9 +1,13 @@
 import argparse
-from transformers import MambaForCausalLM, AutoTokenizer
+from transformers import AutoConfig, MambaForCausalLM, AutoTokenizer
 import torch
 import json
 import pickle
-
+import transformers
+import torch.nn.functional as F
+import gc
+import os
+import gzip
 
 def read_dataset(filename):
     texts = []
@@ -23,25 +27,30 @@ def tokenize_dataset(dataset, tokenizer):
 
 
 def chunk_dataset(tokenized_dataset, block_size):
+    block_size = block_size - 1  # Make room for bos_token
     concatenated_input_ids = torch.cat(
         [tokens["input_ids"][0] for tokens in tokenized_dataset], dim=0
     )
-    concatenated_attention_masks = torch.cat(
-        [tokens["attention_mask"][0] for tokens in tokenized_dataset], dim=0
-    )
+    #concatenated_attention_masks = torch.cat(
+     #   [tokens["attention_mask"][0] for tokens in tokenized_dataset], dim=0
+    #)
+
     total_length = len(concatenated_input_ids)
     chunks = {
         "input_ids": [
-            concatenated_input_ids[i : i + block_size]
+             F.pad(concatenated_input_ids[i : i + block_size], (1, 0), value=0) # pad_token_id is 0
             for i in range(0, total_length, block_size)
         ],
-        "attention_mask": [
-            concatenated_attention_masks[i : i + block_size]
-            for i in range(0, total_length, block_size)
-        ],
+        #"attention_mask": [
+         #   F.pad(concatenated_attention_masks[i : i + block_size], (1, 0), value=1)
+          #  for i in range(0, total_length, block_size)
+        #],
     }
     # Add padding for last chunk if less than block_size
+    block_size = block_size + 1
     if len(chunks["input_ids"][-1]) < block_size:
+        chunks["input_ids"].pop()
+        '''
         padding_length = block_size - len(chunks["input_ids"][-1])
         chunks["input_ids"][-1] = torch.cat(
             [chunks["input_ids"][-1], torch.zeros(padding_length, dtype=torch.long)]
@@ -52,6 +61,7 @@ def chunk_dataset(tokenized_dataset, block_size):
                 torch.zeros(padding_length, dtype=torch.long),
             ]
         )
+        '''
     return chunks
 
 
@@ -64,23 +74,31 @@ def batch_chunks(chunked_dataset, batch_size):
                 "input_ids": torch.stack(
                     chunked_dataset["input_ids"][i : i + batch_size]
                 ),
-                "attention_mask": torch.stack(
-                    chunked_dataset["attention_mask"][i : i + batch_size]
-                ),
+                #"attention_mask": torch.stack(
+                 #   chunked_dataset["attention_mask"][i : i + batch_size]
+                #),
             }
         )
     return batched_chunks
 
+def move_cache(cache_params, device):
+    for key in cache_params.ssm_states:
+        cache_params.ssm_states[key] = cache_params.ssm_states[key].to(device)
+    for key in cache_params.conv_states:
+        cache_params.conv_states[key] = cache_params.conv_states[key].to(device)
+    return cache_params
 
 def get_cache_params(batch, model):
     outputs = model(batch, output_hidden_states=True, use_cache=True, return_dict=True)
     hidden_states = outputs.cache_params
+    hidden_states = move_cache(hidden_states, 'cpu')
     return hidden_states
 
 
-def main(input_file, model_id, chunk_size, batch_size, output_file):
+def main(input_file, model_id, chunk_size, batch_size, output_file, checkpoints=None):
     tokenizer = AutoTokenizer.from_pretrained(model_id)
-    model = MambaForCausalLM.from_pretrained(model_id)
+    config = AutoConfig.from_pretrained('model/eval_config.json')
+    model = MambaForCausalLM.from_pretrained(model_id, config=config)
     model.cuda()
 
     raw_dataset = read_dataset(input_file)
@@ -89,8 +107,9 @@ def main(input_file, model_id, chunk_size, batch_size, output_file):
     batched_chunks = batch_chunks(
         chunked_dataset, batch_size
     )  # batched_chunks[batch_number]['input_ids'][instance_number]
-
+    print("Number of batches: ", len(batched_chunks))
     encoded_dataset = batched_chunks.copy()
+    
     for idx, batch in enumerate(batched_chunks):
         print(idx)
         with torch.no_grad():
@@ -98,11 +117,22 @@ def main(input_file, model_id, chunk_size, batch_size, output_file):
             hidden_states = get_cache_params(input_ids, model)
             encoded_dataset[idx]["cache_params"] = hidden_states
         del hidden_states, input_ids
+        gc.collect()
         torch.cuda.empty_cache()
 
-    # Save encoded_dataset as pickle file
-    with open(output_file, "wb") as f:
-        pickle.dump(encoded_dataset, f)
+        completed_steps = (idx + 1)
+        if checkpoints and (idx + 1) % checkpoints == 0:
+            # Save encoded_dataset as pickle file
+            output_file = os.path.join(output_file, f"subset_{idx + 1}.pkl.gz")
+            with open(output_file, "wb") as f:
+                pickle.dump(encoded_dataset[completed_steps-checkpoints:completed_steps-1], f)
+            encoded_dataset[completed_steps-checkpoints:completed_steps-1]=[None] * (checkpoints - 1)
+            print(f"Saved and cleared checkpoint {completed_steps}")
+
+    if not checkpoints:
+        # Save encoded_dataset as pickle file
+        with open(output_file, "wb") as f:
+            pickle.dump(encoded_dataset, f)   
 
 
 if __name__ == "__main__":
@@ -119,6 +149,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--chunk_size", type=int, required=True, help="Size of each chunk"
     )
+
+    parser.add_argument(
+        "--checkpoints", type=int, help="Divide dataset into checkpoints if needed"
+    )
+
     parser.add_argument(
         "--batch_size", type=int, required=True, help="Size of each batch"
     )
@@ -130,4 +165,5 @@ if __name__ == "__main__":
         args.chunk_size,
         args.batch_size,
         args.output_file,
+        args.checkpoints,
     )

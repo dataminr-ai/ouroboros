@@ -266,39 +266,11 @@ def main():
         with open(args.validation_file, "rb") as file:
             eval_data = pickle.load(file)
 
-    # Load pretrained model and tokenizer
-    #
-    # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
-    # download model & vocab.
-    if args.config_name:
-        config = AutoConfig.from_pretrained(
-            args.config_name,
-            trust_remote_code=args.trust_remote_code,
-        )
-    elif args.model_name_or_path:
-        config = AutoConfig.from_pretrained(
-            args.model_name_or_path,
-            trust_remote_code=args.trust_remote_code,
-        )
-    else:
-        config = CONFIG_MAPPING[args.model_type]()
-        logger.warning("You are instantiating a new config instance from scratch.")
-
-    if args.tokenizer_name:
-        tokenizer = AutoTokenizer.from_pretrained(
-            args.tokenizer_name, use_fast=not args.use_slow_tokenizer, trust_remote_code=args.trust_remote_code
-        )
-    elif args.model_name_or_path:
+    if args.model_name_or_path:
         tokenizer = AutoTokenizer.from_pretrained(
             args.model_name_or_path, use_fast=not args.use_slow_tokenizer, trust_remote_code=args.trust_remote_code
         )
-    else:
-        raise ValueError(
-            "You are instantiating a new tokenizer from scratch. This is not supported by this script. "
-            "You can do it from another script, save it, and load it from here, using --tokenizer_name."
-        )
-
-    if args.model_name_or_path:
+        config = AutoConfig.from_pretrained('model/train_config.json')
         model = AutoModelForCausalLM.from_pretrained(
             args.model_name_or_path,
             from_tf=bool(".ckpt" in args.model_name_or_path),
@@ -306,10 +278,6 @@ def main():
             low_cpu_mem_usage=args.low_cpu_mem_usage,
             trust_remote_code=args.trust_remote_code,
         )
-    else:
-        #logger.info("Training new model from scratch")
-        model = AutoModelForCausalLM.from_config(config, trust_remote_code=args.trust_remote_code)
-
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
     embedding_size = model.get_input_embeddings().weight.shape[0]
@@ -350,8 +318,17 @@ def main():
     if checkpointing_steps is not None and checkpointing_steps.isdigit():
         checkpointing_steps = int(checkpointing_steps)
 
+    print('Checkpointing Steps:', checkpointing_steps)
+
     model.train()
     model.cuda()
+
+    def move_cache(cache_params, device):
+        for key in cache_params.ssm_states:
+            cache_params.ssm_states[key] = cache_params.ssm_states[key].to(device)
+        for key in cache_params.conv_states:
+            cache_params.conv_states[key] = cache_params.conv_states[key].to(device)
+        return cache_params
 
     for epoch in range(0, args.num_train_epochs):
           
@@ -359,6 +336,7 @@ def main():
             print('Step: ', step)
             inputs = batch['input_ids'].to("cuda")
             cache_params = batch['cache_params']
+            cache_params=move_cache(cache_params, 'cuda')
             outputs = model(input_ids =inputs,
                                 cache_params = cache_params,
                                 use_cache=True,
@@ -369,22 +347,29 @@ def main():
 
             print('Loss: ', loss.item())
             print('Memory: ', torch.cuda.memory_allocated())
-            print('\n\n')
+            print('\n')
 
             loss.backward()
             optimizer.step()
             lr_scheduler.step()  
             optimizer.zero_grad()
-            
+
+            del inputs, cache_params, outputs, loss
+            torch.cuda.empty_cache()
+        
             completed_steps = step + 1
-            if isinstance(checkpointing_steps, int):
-                if completed_steps % checkpointing_steps == 0:
-                    output_dir = f"step_{completed_steps}"
-                    if args.output_dir is not None:
-                        output_dir = os.path.join(args.output_dir, output_dir)
-                    model.save_pretrained(output_dir)
+            if completed_steps % checkpointing_steps == 0:
+                output_dir = f"step_{completed_steps}"
+                if args.output_dir is not None:
+                    output_dir = os.path.join(args.output_dir, output_dir)
+                print('Saving Checkpoint at Step', completed_steps, 'in directory ', output_dir)
+                model.save_pretrained(output_dir)
             if completed_steps >= args.max_train_steps:
                 break
-            
+
+        output_dir = os.path.join(args.output_dir, f"epoch_{epoch}")
+        model.save_pretrained(output_dir)
+        print('Saving final checkpoint for epoch ', epoch, 'in directory ', output_dir)
+   
 if __name__ == "__main__":
     main()
