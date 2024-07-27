@@ -1,31 +1,33 @@
 import pickle
-from transformers import MambaForCausalLM, AutoTokenizer
+from transformers import AutoConfig, MambaForCausalLM, AutoTokenizer
 import torch
 
-filename='encoded_training_subset.pkl'
+filename='encoded_training_subset_32.pkl'
 with open(filename, 'rb') as f:
     train_data = pickle.load(f)
 
 # Load the checkpoint
-model1=MambaForCausalLM.from_pretrained('state-spaces/mamba-130m-hf')
 tokenizer = AutoTokenizer.from_pretrained('state-spaces/mamba-130m-hf')
+config = AutoConfig.from_pretrained('model/eval_config.json')
+model = MambaForCausalLM.from_pretrained('model/model32_e6/epoch_0', config=config)
 
-model = MambaForCausalLM.from_pretrained('model/step_260', config = model1.config)
 bos_inputs = tokenizer.batch_encode_plus([tokenizer.bos_token]*4, return_tensors='pt').to('cuda')
 
+
+#Batch
 batch = train_data[0]
 inp = batch['input_ids'].to('cuda')
 cache = batch['cache_params']
+cache.seqlen_offset = 0
 model.cuda()
-
 
 preds=[]
 
-chunk_size=128
+chunk_size=32
 for idx in range(chunk_size):
     print(idx)
     if idx == 0:
-        inputs = bos_inputs['input_ids']
+        inputs = inp[:, 0].unsqueeze(1)
         cache_params = cache
     else:
         inputs = next_tokens
@@ -39,8 +41,8 @@ for idx in range(chunk_size):
 
 gen = torch.cat(preds, dim=1)
 
-for i in range(4):
-    print('Input:', tokenizer.decode(inp[i], skip_special_tokens=True))
-    print('Output:', tokenizer.decode(gen[i], skip_special_tokens=True))
-    print('---------------------')
+for i in range(14):
+    print('Text:', tokenizer.decode(inp[i]))
     print('\n')
+    print('Reconstruction:', tokenizer.decode(gen[i]))
+    print('\n\n')
