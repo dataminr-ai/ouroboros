@@ -60,7 +60,7 @@ from transformers.utils.versions import require_version
 
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
-check_min_version("4.43.0.dev0")
+#check_min_version("4.43.0.dev0")
 
 logger = get_logger(__name__)
 
@@ -354,7 +354,7 @@ def main():
         )
     elif args.model_name_or_path:
         config = AutoConfig.from_pretrained(
-            args.model_name_or_path,
+            'model/train_config.json',
             trust_remote_code=args.trust_remote_code,
         )
     else:
@@ -512,8 +512,6 @@ def main():
         else:
             active_dataloader = train_data
         '''
-        bos_inputs = tokenizer.batch_encode_plus([tokenizer.bos_token]*4, return_tensors="pt").to("cuda")
-        chunk_size = 128
         train_losses = []
         for step, batch in enumerate(train_data):
             with accelerator.accumulate(model):
@@ -524,25 +522,21 @@ def main():
                                     use_cache=True,
                                     return_dict=True,
                                     labels = inputs)
-                del cache_params
-                torch.cuda.empty_cache()
-                cache_params = outputs.cache_params
 
                 loss = outputs.loss
-                train_losses.append(loss)
                 accelerator.backward(loss)
                 optimizer.step()
                 lr_scheduler.step()
+                print('Loss: ', loss.item())
 
-                del inputs, outputs, loss
+                del inputs, outputs, loss, cache_params
                 torch.cuda.empty_cache()
                 
                 # We keep track of the loss at each epoch
                 if args.with_tracking:
                     total_loss += loss.detach().float()
                 optimizer.zero_grad()
-                with open("train_losses.pkl", "wb") as f:
-                    pickle.dump(train_losses, f)
+
             
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -558,7 +552,10 @@ def main():
             if completed_steps >= args.max_train_steps:
                 break
         
-        
+        output_dir = os.path.join(args.output_dir, f"epoch_{epoch}")
+        model.save_pretrained(output_dir)
+        print('Saving final checkpoint for epoch ', epoch, 'in directory ', output_dir)
+        '''   
         model.eval()
         losses = []
         for step, batch in enumerate(eval_data):
@@ -639,7 +636,7 @@ def main():
                 )
             with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
                 json.dump({"perplexity": perplexity}, f)
-                
+       '''          
     
 if __name__ == "__main__":
     main()
