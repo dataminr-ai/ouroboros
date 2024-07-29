@@ -40,9 +40,10 @@ from datasets import load_dataset
 from huggingface_hub import HfApi
 #from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
-#from datasets import Dataset, DatasetDict
+from datasets import Dataset, DatasetDict
 import pickle
 import torch.nn.functional as F
+import gzip
 
 import transformers
 from transformers import (
@@ -84,8 +85,13 @@ def parse_args():
         default=None,
         help="The configuration name of the dataset to use (via the datasets library).",
     )
+    '''
     parser.add_argument(
         "--train_file", type=str, default=None, help="A csv, txt or a json file containing the training data."
+    )
+    '''
+    parser.add_argument(
+        "--train_path", type=str, default=None, help="Directory containing training data files (pkl.gz)"
     )
     parser.add_argument(
         "--validation_file", type=str, default=None, help="A csv, txt or a json file containing the validation data."
@@ -102,10 +108,10 @@ def parse_args():
         required=False,
     )
     parser.add_argument(
-        "--config_name",
+        "--config_0ath",
         type=str,
         default=None,
-        help="Pretrained config name or path if not the same as model_name",
+        help="Pretrained config path",
     )
     parser.add_argument(
         "--tokenizer_name",
@@ -218,6 +224,12 @@ def parse_args():
         help="If the training should continue from a checkpoint folder.",
     )
     parser.add_argument(
+        "--data_shard_len",
+        type=str,
+        default=416,
+        help="Number of batches in each shard of training data (as used during encoding)",
+    )
+    parser.add_argument(
         "--with_tracking",
         action="store_true",
         help="Whether to enable experiment trackers for logging.",
@@ -240,15 +252,17 @@ def parse_args():
             "If passed, LLM loading time and RAM consumption will be benefited."
         ),
     )
+
     args = parser.parse_args()
 
     # Sanity checks
+    '''
     if args.dataset_name is None and args.train_file is None and args.validation_file is None:
         raise ValueError("Need either a dataset name or a training/validation file.")
     if args.push_to_hub:
         if args.output_dir is None:
             raise ValueError("Need an `output_dir` to create a repo when `--push_to_hub` is passed.")
-
+    '''
     return args
 
 
@@ -259,18 +273,19 @@ def main():
     # information sent is the one passed as arguments along with your Python/PyTorch versions.
     send_example_telemetry("run_clm_no_trainer", args)
 
-    if args.train_file is not None:
-        with open(args.train_file, "rb") as file:
-            train_data = pickle.load(file)
-    if args.validation_file is not None:
-        with open(args.validation_file, "rb") as file:
-            eval_data = pickle.load(file)
+    log_file= os.path.join(args.output_dir, 'output.log')
+    logging.basicConfig(level=logging.DEBUG,
+                    format='%(asctime)s - %(levelname)s - %(message)s',
+                    handlers=[logging.FileHandler(log_file, 'w'),
+                              logging.StreamHandler()])
+
+    train_files = os.listdir(args.train_path)
 
     if args.model_name_or_path:
         tokenizer = AutoTokenizer.from_pretrained(
             args.model_name_or_path, use_fast=not args.use_slow_tokenizer, trust_remote_code=args.trust_remote_code
         )
-        config = AutoConfig.from_pretrained('model/train_config.json')
+        config = AutoConfig.from_pretrained(args.config_path)
         model = AutoModelForCausalLM.from_pretrained(
             args.model_name_or_path,
             from_tf=bool(".ckpt" in args.model_name_or_path),
@@ -301,7 +316,7 @@ def main():
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
-    num_update_steps_per_epoch = math.ceil(len(train_data) / args.gradient_accumulation_steps)
+    num_update_steps_per_epoch = math.ceil(len(train_files) * int(args.data_shard_len)/ args.gradient_accumulation_steps)
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
@@ -313,7 +328,7 @@ def main():
         num_training_steps=args.max_train_steps
 
     )
-    # Figure out how many steps we should save the Accelerator states
+
     checkpointing_steps = args.checkpointing_steps
     if checkpointing_steps is not None and checkpointing_steps.isdigit():
         checkpointing_steps = int(checkpointing_steps)
@@ -323,53 +338,49 @@ def main():
     model.train()
     model.cuda()
 
-    def move_cache(cache_params, device):
-        for key in cache_params.ssm_states:
-            cache_params.ssm_states[key] = cache_params.ssm_states[key].to(device)
-        for key in cache_params.conv_states:
-            cache_params.conv_states[key] = cache_params.conv_states[key].to(device)
-        return cache_params
-
+    completed_steps=0
     for epoch in range(0, args.num_train_epochs):
-          
-        for step, batch in enumerate(train_data):
-            print('Step: ', step)
-            inputs = batch['input_ids'].to("cuda")
-            cache_params = batch['cache_params']
-            cache_params=move_cache(cache_params, 'cuda')
-            outputs = model(input_ids =inputs,
-                                cache_params = cache_params,
-                                use_cache=True,
-                                return_dict=True,
-                                labels = inputs)
+        for fid, file in enumerate(train_files):
+            path=os.path.join(args.train_path,file)
+            with open(path, "rb") as f:
+                train_data = pickle.load(f)
 
-            loss = outputs.loss
+            for step, batch in enumerate(train_data):
+                logging.info('File: ' + str(fid) + ' Step: '+ str(completed_steps))
+                inputs = batch['input_ids'].to("cuda")
+                cache_params = batch['cache_params']
+                outputs = model(input_ids =inputs,
+                                    cache_params = cache_params,
+                                    use_cache=True,
+                                    return_dict=True,
+                                    labels = inputs)
 
-            print('Loss: ', loss.item())
-            print('Memory: ', torch.cuda.memory_allocated())
-            print('\n')
+                loss = outputs.loss
 
-            loss.backward()
-            optimizer.step()
-            lr_scheduler.step()  
-            optimizer.zero_grad()
+                logging.info('Loss: '+ str( loss.item()))
+                logging.info('Memory: ' + str(torch.cuda.memory_allocated())+'\n')
 
-            del inputs, cache_params, outputs, loss
-            torch.cuda.empty_cache()
-        
-            completed_steps = step + 1
-            if completed_steps % checkpointing_steps == 0:
-                output_dir = f"step_{completed_steps}"
-                if args.output_dir is not None:
-                    output_dir = os.path.join(args.output_dir, output_dir)
-                print('Saving Checkpoint at Step', completed_steps, 'in directory ', output_dir)
-                model.save_pretrained(output_dir)
-            if completed_steps >= args.max_train_steps:
-                break
+                loss.backward()
+                optimizer.step()
+                lr_scheduler.step()  
+                optimizer.zero_grad()
+
+                del inputs, cache_params, outputs, loss
+                torch.cuda.empty_cache()
+            
+                completed_steps += 1
+                if completed_steps % checkpointing_steps == 0:
+                    output_dir = f"step_{completed_steps}"
+                    if args.output_dir is not None:
+                        output_dir = os.path.join(args.output_dir, output_dir)
+                    logging.info('Saving Checkpoint at Step' + str(completed_steps) + ' in directory '+ str(output_dir))
+                    model.save_pretrained(output_dir)
+                if completed_steps >= args.max_train_steps:
+                    break
 
         output_dir = os.path.join(args.output_dir, f"epoch_{epoch}")
         model.save_pretrained(output_dir)
-        print('Saving final checkpoint for epoch ', epoch, 'in directory ', output_dir)
+        logging.info('Saving final checkpoint for epoch '+ str(epoch)+ 'in directory '+ str(output_dir))
    
 if __name__ == "__main__":
     main()

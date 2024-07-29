@@ -95,9 +95,9 @@ def get_cache_params(batch, model):
     return hidden_states
 
 
-def main(input_file, model_id, chunk_size, batch_size, output_file, checkpoints=None):
+def main(input_file, model_id, config_path, chunk_size, batch_size, output_file, checkpoints=None):
     tokenizer = AutoTokenizer.from_pretrained(model_id)
-    config = AutoConfig.from_pretrained('model/eval_config.json')
+    config = AutoConfig.from_pretrained(config_path)
     model = MambaForCausalLM.from_pretrained(model_id, config=config)
     model.cuda()
 
@@ -123,8 +123,8 @@ def main(input_file, model_id, chunk_size, batch_size, output_file, checkpoints=
         completed_steps = (idx + 1)
         if checkpoints and (idx + 1) % checkpoints == 0:
             # Save encoded_dataset as pickle file
-            output_file = os.path.join(output_file, f"subset_{idx + 1}.pkl.gz")
-            with open(output_file, "wb") as f:
+            output_path = os.path.join(output_file, f"subset_{idx + 1}.pkl")
+            with open(output_path, "wb") as f:
                 pickle.dump(encoded_dataset[completed_steps-checkpoints:completed_steps-1], f)
             encoded_dataset[completed_steps-checkpoints:completed_steps-1]=[None] * (checkpoints - 1)
             print(f"Saved and cleared checkpoint {completed_steps}")
@@ -143,6 +143,7 @@ if __name__ == "__main__":
         "--input_file", type=str, required=True, help="Input dataset filename (jsonl)"
     )
     parser.add_argument("--model_id", type=str, required=True, help="Model ID")
+    parser.add_argument("--config_path", type=str, required=True, help="Config.json")
     parser.add_argument(
         "--output_file", type=str, required=True, help="Output dataset filename (pkl)"
     )
@@ -162,6 +163,7 @@ if __name__ == "__main__":
     main(
         args.input_file,
         args.model_id,
+        args.config_path,
         args.chunk_size,
         args.batch_size,
         args.output_file,
