@@ -168,6 +168,11 @@ class MambaDecoderMixer(nn.Module):
         if encoder_cache_params is not None:
             prefix = ssm_state.unsqueeze(dim=2)
             deltaB_u = torch.concat((prefix, deltaB_u), dim=2)
+            # We also need discrete A to have the right length, we'll prepend it with zeros to be safe
+            size = discrete_A.size()
+            prefix_size = (size[0], size[1], 1, size[3])
+            prefix = torch.zeros(size=prefix_size, dtype=discrete_A.dtype, device=discrete_A.device)
+            discrete_A = torch.concat((prefix, discrete_A), dim=2)
 
         # 3.c perform the recurrence y ← SSM(A, B, C)(x)
         if self.use_mambapy and self.training and cache_params is None:
@@ -230,13 +235,14 @@ class MambaDecoderBlock(nn.Module):
         hidden_states,
         cache_params: Optional[MambaCache] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        encoder_cache_params: Optional[MambaCache] = None,
     ):
         residual = hidden_states
         hidden_states = self.norm(hidden_states.to(dtype=self.norm.weight.dtype))
         if self.residual_in_fp32:
             residual = residual.to(torch.float32)
 
-        hidden_states = self.mixer(hidden_states, cache_params=cache_params, cache_position=cache_position)
+        hidden_states = self.mixer(hidden_states, cache_params=cache_params, cache_position=cache_position, encoder_cache_params=encoder_cache_params)
         hidden_states = residual + hidden_states
         return hidden_states
 
@@ -447,6 +453,7 @@ class MambaDecoderModel(MambaDecoderPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        encoder_cache_params: Optional[MambaCache] = None,
         **kwargs,  # `attention_mask` is passed by the tokenizer and we don't want it
     ) -> Union[Tuple, MambaDecoderOutput]:
         output_hidden_states = (
@@ -492,7 +499,7 @@ class MambaDecoderModel(MambaDecoderPreTrainedModel):
                     mixer_block.__call__, hidden_states, cache_params, cache_position
                 )
             else:
-                hidden_states = mixer_block(hidden_states, cache_params=cache_params, cache_position=cache_position)
+                hidden_states = mixer_block(hidden_states, cache_params=cache_params, cache_position=cache_position, encoder_cache_params=encoder_cache_params)
 
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
@@ -610,6 +617,7 @@ class MambaDecoderForCausalLM(MambaDecoderPreTrainedModel):
         return_dict: Optional[bool] = None,
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.Tensor] = None,
+        encoder_cache_params: Optional[MambaCache] = None,
         **kwargs,  # for now we need this for generation
     ) -> Union[Tuple, MambaDecoderCausalLMOutput]:
         r"""
@@ -628,6 +636,7 @@ class MambaDecoderForCausalLM(MambaDecoderPreTrainedModel):
             return_dict=return_dict,
             use_cache=use_cache,
             cache_position=cache_position,
+            encoder_cache_params=encoder_cache_params,
         )
         hidden_states = mamba_outputs[0]
 
