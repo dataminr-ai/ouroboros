@@ -38,7 +38,8 @@ from accelerate.logging import get_logger
 from accelerate.utils import set_seed
 from datasets import load_dataset
 from huggingface_hub import HfApi
-#from torch.utils.data import DataLoader
+
+# from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from datasets import Dataset, DatasetDict
 import pickle
@@ -58,21 +59,28 @@ from transformers import (
 )
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
-
+from tqdm import tqdm
+import encode_dataset as ed
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
-#check_min_version("4.43.0.dev0")
+# check_min_version("4.43.0.dev0")
 
 logger = get_logger(__name__)
 
-require_version("datasets>=2.14.0", "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt")
+require_version(
+    "datasets>=2.14.0",
+    "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt",
+)
 
 MODEL_CONFIG_CLASSES = list(MODEL_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 torch.autograd.set_detect_anomaly(True)
 
+
 def parse_args():
-    parser = argparse.ArgumentParser(description="Finetune a transformers model on a causal language modeling task")
+    parser = argparse.ArgumentParser(
+        description="Finetune a transformers model on a causal language modeling task"
+    )
     parser.add_argument(
         "--dataset_name",
         type=str,
@@ -85,16 +93,22 @@ def parse_args():
         default=None,
         help="The configuration name of the dataset to use (via the datasets library).",
     )
-    '''
+    """
     parser.add_argument(
         "--train_file", type=str, default=None, help="A csv, txt or a json file containing the training data."
     )
-    '''
+    """
     parser.add_argument(
-        "--train_path", type=str, default=None, help="Directory containing training data files (pkl.gz)"
+        "--train_file",
+        type=str,
+        default=None,
+        help="A json file containing the training data",
     )
     parser.add_argument(
-        "--validation_file", type=str, default=None, help="A csv, txt or a json file containing the validation data."
+        "--validation_file",
+        type=str,
+        default=None,
+        help="A csv, txt or a json file containing the validation data.",
     )
     parser.add_argument(
         "--validation_split_percentage",
@@ -108,10 +122,16 @@ def parse_args():
         required=False,
     )
     parser.add_argument(
-        "--config_0ath",
+        "--encoder_config",
         type=str,
         default=None,
-        help="Pretrained config path",
+        help="Pretrained config path for decoder",
+    )
+    parser.add_argument(
+        "--decoder_config",
+        type=str,
+        default=None,
+        help="Pretrained config path for decoder",
     )
     parser.add_argument(
         "--tokenizer_name",
@@ -142,8 +162,15 @@ def parse_args():
         default=5e-5,
         help="Initial learning rate (after the potential warmup period) to use.",
     )
-    parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
-    parser.add_argument("--num_train_epochs", type=int, default=3, help="Total number of training epochs to perform.")
+    parser.add_argument(
+        "--weight_decay", type=float, default=0.0, help="Weight decay to use."
+    )
+    parser.add_argument(
+        "--num_train_epochs",
+        type=int,
+        default=3,
+        help="Total number of training epochs to perform.",
+    )
     parser.add_argument(
         "--max_train_steps",
         type=int,
@@ -161,13 +188,27 @@ def parse_args():
         type=SchedulerType,
         default="linear",
         help="The scheduler type to use.",
-        choices=["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"],
+        choices=[
+            "linear",
+            "cosine",
+            "cosine_with_restarts",
+            "polynomial",
+            "constant",
+            "constant_with_warmup",
+        ],
     )
     parser.add_argument(
-        "--num_warmup_steps", type=int, default=0, help="Number of steps for the warmup in the lr scheduler."
+        "--num_warmup_steps",
+        type=int,
+        default=0,
+        help="Number of steps for the warmup in the lr scheduler.",
     )
-    parser.add_argument("--output_dir", type=str, default=None, help="Where to store the final model.")
-    parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
+    parser.add_argument(
+        "--output_dir", type=str, default=None, help="Where to store the final model."
+    )
+    parser.add_argument(
+        "--seed", type=int, default=None, help="A seed for reproducible training."
+    )
     parser.add_argument(
         "--model_type",
         type=str,
@@ -192,16 +233,28 @@ def parse_args():
         help="The number of processes to use for the preprocessing.",
     )
     parser.add_argument(
-        "--overwrite_cache", action="store_true", help="Overwrite the cached training and evaluation sets"
+        "--overwrite_cache",
+        action="store_true",
+        help="Overwrite the cached training and evaluation sets",
     )
     parser.add_argument(
-        "--no_keep_linebreaks", action="store_true", help="Do not keep line breaks when using TXT files."
+        "--no_keep_linebreaks",
+        action="store_true",
+        help="Do not keep line breaks when using TXT files.",
     )
-    parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
     parser.add_argument(
-        "--hub_model_id", type=str, help="The name of the repository to keep in sync with the local `output_dir`."
+        "--push_to_hub",
+        action="store_true",
+        help="Whether or not to push the model to the Hub.",
     )
-    parser.add_argument("--hub_token", type=str, help="The token to use to push to the Model Hub.")
+    parser.add_argument(
+        "--hub_model_id",
+        type=str,
+        help="The name of the repository to keep in sync with the local `output_dir`.",
+    )
+    parser.add_argument(
+        "--hub_token", type=str, help="The token to use to push to the Model Hub."
+    )
     parser.add_argument(
         "--trust_remote_code",
         action="store_true",
@@ -224,10 +277,14 @@ def parse_args():
         help="If the training should continue from a checkpoint folder.",
     )
     parser.add_argument(
-        "--data_shard_len",
-        type=str,
-        default=416,
-        help="Number of batches in each shard of training data (as used during encoding)",
+        "--chunk_size",
+        type=int,
+        help="Sequence Length for training",
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        help="Batch size",
     )
     parser.add_argument(
         "--with_tracking",
@@ -256,15 +313,28 @@ def parse_args():
     args = parser.parse_args()
 
     # Sanity checks
-    '''
+    """
     if args.dataset_name is None and args.train_file is None and args.validation_file is None:
         raise ValueError("Need either a dataset name or a training/validation file.")
     if args.push_to_hub:
         if args.output_dir is None:
             raise ValueError("Need an `output_dir` to create a repo when `--push_to_hub` is passed.")
-    '''
+    """
     return args
 
+
+def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
+    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+    model.save_pretrained(checkpoint_path)
+    checkpoint_path = os.path.join(checkpoint_path, "training_state.bin")
+    checkpoint = {
+        "epoch": epoch,
+        "step": step,
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+    }
+    torch.save(checkpoint, checkpoint_path)
+    logging.info(f"Checkpoint saved at epoch {epoch}, step {step}")
 
 def main():
     args = parse_args()
@@ -273,26 +343,49 @@ def main():
     # information sent is the one passed as arguments along with your Python/PyTorch versions.
     send_example_telemetry("run_clm_no_trainer", args)
 
-    log_file= os.path.join(args.output_dir, 'output.log')
-    logging.basicConfig(level=logging.DEBUG,
-                    format='%(asctime)s - %(levelname)s - %(message)s',
-                    handlers=[logging.FileHandler(log_file, 'w'),
-                              logging.StreamHandler()])
-
-    train_files = os.listdir(args.train_path)
+    log_file = os.path.join(args.output_dir, "output.log")
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        handlers=[logging.FileHandler(log_file, "w"), logging.StreamHandler()],
+    )
 
     if args.model_name_or_path:
         tokenizer = AutoTokenizer.from_pretrained(
-            args.model_name_or_path, use_fast=not args.use_slow_tokenizer, trust_remote_code=args.trust_remote_code
+            args.model_name_or_path,
+            use_fast=not args.use_slow_tokenizer,
+            trust_remote_code=args.trust_remote_code,
         )
-        config = AutoConfig.from_pretrained(args.config_path)
+        decoder_config = AutoConfig.from_pretrained(args.decoder_config)
         model = AutoModelForCausalLM.from_pretrained(
             args.model_name_or_path,
             from_tf=bool(".ckpt" in args.model_name_or_path),
-            config=config,
+            config=decoder_config,
             low_cpu_mem_usage=args.low_cpu_mem_usage,
             trust_remote_code=args.trust_remote_code,
         )
+        model.train()
+        model.cuda()
+
+        encoder_config = AutoConfig.from_pretrained(args.encoder_config)
+        encoder = AutoModelForCausalLM.from_pretrained(
+            args.model_name_or_path,
+            from_tf=bool(".ckpt" in args.model_name_or_path),
+            config=encoder_config,
+            low_cpu_mem_usage=args.low_cpu_mem_usage,
+            trust_remote_code=args.trust_remote_code,
+        )
+        encoder.eval()
+        encoder.cuda()
+
+    # Load Dataset
+    raw_dataset = ed.read_dataset(args.train_file)
+    tokenized_dataset = ed.tokenize_dataset(raw_dataset, tokenizer)
+    chunked_dataset = ed.chunk_dataset(tokenized_dataset, args.chunk_size)
+    batched_chunks = ed.batch_chunks(
+        chunked_dataset, args.batch_size
+    )  # batched_chunks[batch_number]['input_ids'][instance_number]
+
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
     embedding_size = model.get_input_embeddings().weight.shape[0]
@@ -304,11 +397,19 @@ def main():
     no_decay = ["bias", "layer_norm.weight"]
     optimizer_grouped_parameters = [
         {
-            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+            "params": [
+                p
+                for n, p in model.named_parameters()
+                if not any(nd in n for nd in no_decay)
+            ],
             "weight_decay": args.weight_decay,
         },
         {
-            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+            "params": [
+                p
+                for n, p in model.named_parameters()
+                if any(nd in n for nd in no_decay)
+            ],
             "weight_decay": 0.0,
         },
     ]
@@ -316,7 +417,9 @@ def main():
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
-    num_update_steps_per_epoch = math.ceil(len(train_files) * int(args.data_shard_len)/ args.gradient_accumulation_steps)
+    num_update_steps_per_epoch = math.ceil(
+        len(batched_chunks) / args.gradient_accumulation_steps
+    )
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
@@ -325,62 +428,76 @@ def main():
         name=args.lr_scheduler_type,
         optimizer=optimizer,
         num_warmup_steps=args.num_warmup_steps,
-        num_training_steps=args.max_train_steps
-
+        num_training_steps=args.max_train_steps,
     )
 
     checkpointing_steps = args.checkpointing_steps
     if checkpointing_steps is not None and checkpointing_steps.isdigit():
         checkpointing_steps = int(checkpointing_steps)
 
-    print('Checkpointing Steps:', checkpointing_steps)
+    # Load from checkpoint if available
+    if not args.resume_from_checkpoint:
+        completed_steps, start_step = 0, 0
 
-    model.train()
-    model.cuda()
+    with tqdm(total=args.max_train_steps, desc="Training Progress") as pbar:
+        pbar.update(completed_steps)
+        for epoch in range(0, args.num_train_epochs):
+            for step, batch in enumerate(batched_chunks):
+                logging.info("Step: " + str(completed_steps))
+                with torch.no_grad():
+                    input_ids = batch["input_ids"].to("cuda")
+                    cache_params = ed.get_cache_params(input_ids, encoder)
 
-    completed_steps=0
-    for epoch in range(0, args.num_train_epochs):
-        for fid, file in enumerate(train_files):
-            path=os.path.join(args.train_path,file)
-            with open(path, "rb") as f:
-                train_data = pickle.load(f)
-
-            for step, batch in enumerate(train_data):
-                logging.info('File: ' + str(fid) + ' Step: '+ str(completed_steps))
-                inputs = batch['input_ids'].to("cuda")
-                cache_params = batch['cache_params']
-                outputs = model(input_ids =inputs,
-                                    cache_params = cache_params,
-                                    use_cache=True,
-                                    return_dict=True,
-                                    labels = inputs)
+                input_ids = F.pad(input_ids, (1, 1), value=tokenizer.eos_token_id)
+                outputs = model(
+                    input_ids=input_ids,
+                    cache_params=cache_params,
+                    use_cache=True,
+                    return_dict=True,
+                    labels=input_ids,
+                )
 
                 loss = outputs.loss
 
-                logging.info('Loss: '+ str( loss.item()))
-                logging.info('Memory: ' + str(torch.cuda.memory_allocated())+'\n')
+                logging.info("Loss: " + str(loss.item()))
+                logging.info("Memory: " + str(torch.cuda.memory_allocated()) + "\n")
 
                 loss.backward()
                 optimizer.step()
-                lr_scheduler.step()  
+                lr_scheduler.step()
                 optimizer.zero_grad()
 
-                del inputs, cache_params, outputs, loss
+                del input_ids, cache_params, outputs, loss
                 torch.cuda.empty_cache()
-            
+
                 completed_steps += 1
+                pbar.update(1)
                 if completed_steps % checkpointing_steps == 0:
                     output_dir = f"step_{completed_steps}"
                     if args.output_dir is not None:
                         output_dir = os.path.join(args.output_dir, output_dir)
-                    logging.info('Saving Checkpoint at Step' + str(completed_steps) + ' in directory '+ str(output_dir))
-                    model.save_pretrained(output_dir)
+                    logging.info(
+                        "Saving Checkpoint at Step"
+                        + str(completed_steps)
+                        + " in directory "
+                        + str(output_dir)
+                    )
+                    # model.save_pretrained(output_dir)
+                    save_checkpoint(
+                        model, optimizer, lr_scheduler, epoch, step, output_dir
+                    )
                 if completed_steps >= args.max_train_steps:
                     break
 
-        output_dir = os.path.join(args.output_dir, f"epoch_{epoch}")
-        model.save_pretrained(output_dir)
-        logging.info('Saving final checkpoint for epoch '+ str(epoch)+ 'in directory '+ str(output_dir))
-   
+    output_dir = os.path.join(args.output_dir, f"epoch_{epoch}")
+    model.save_pretrained(output_dir)
+    logging.info(
+        "Saving final checkpoint for epoch "
+        + str(epoch)
+        + "in directory "
+        + str(output_dir)
+    )
+
+
 if __name__ == "__main__":
     main()
