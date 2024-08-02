@@ -7,121 +7,150 @@ import gc
 import json
 import re
 import argparse
+import encode_dataset as ed
 
-def move_cache(cache_params, device):
-    with torch.no_grad():
-        for key in cache_params.ssm_states:
-            cache_params.ssm_states[key]=cache_params.ssm_states[key].to(device)
-        for key in cache_params.conv_states:
-            cache_params.conv_states[key]=cache_params.conv_states[key].to(device)
-    torch.cuda.empty_cache()
-    gc.collect()
-    return cache_params
 
-def reconstruct(model, tokenizer, batch, chunk_size=32, batch_size=20):
-    inp = batch['input_ids'].to('cuda')
-    cache = batch['cache_params']
-    #cache.device='cuda'
-    cache = move_cache(cache, 'cuda')
+def reconstruct(model, tokenizer, cache, chunk_size, batch_size):
     cache.seqlen_offset = 0
-    preds=[]
-    for idx in range(chunk_size):
-        #print(idx)
+    preds = []
+    for idx in range(chunk_size + 1):
+        print(idx)
         if idx == 0:
-            inputs = inp[:, 0].unsqueeze(1)
+            inputs = torch.zeros((cache.conv_states[0].shape[0], 1)).int().to("cuda")
             cache_params = cache
         else:
             inputs = next_tokens
         with torch.no_grad():
-            outputs = model(input_ids = inputs,
-                            cache_params = cache_params,
-                            use_cache=True,
-                            output_dict=True,)
+            outputs = model(
+                input_ids=inputs,
+                cache_params=cache_params,
+                use_cache=True,
+                output_dict=True,
+            )
         cache_params = outputs.cache_params
         next_tokens = torch.argmax(outputs.logits[:, -1, :], dim=-1).view(-1, 1)
-        preds.append(next_tokens.to('cpu'))
-    gen = torch.cat(preds, dim=1).to('cpu')
-    recons=[]
-    for i in range(batch['input_ids'].shape[0]):
-        recons.append(tokenizer.decode(gen[i]))  
-    del inp, inputs, cache, cache_params, outputs, next_tokens, gen, preds
+        preds.append(next_tokens.to("cpu"))
+    gen = torch.cat(preds, dim=1).to("cpu")
+    recons = []
+    for i in range(gen.shape[0]):
+        recons.append(tokenizer.decode(gen[i]))
+    del inputs, cache, cache_params, outputs, next_tokens, gen, preds
     torch.cuda.empty_cache()
     gc.collect()
     return recons
 
+
 def extract_step_number(path):
-    match = re.search(r'step_(\d+)', path)
+    match = re.search(r"step_(\d+)", path)
     if match:
         return int(match.group(1))
     else:
         raise ValueError("No step number found in the path")
-    
-def main(base_model, config_path, data_path, output_dir, ckpt_path=None):
 
-    with open(data_path, 'rb') as f:
-        eval = pickle.load(f)
 
-    # Load the checkpoint
-    tokenizer = AutoTokenizer.from_pretrained(base_model)
-    config = AutoConfig.from_pretrained(config_path)
+def main(
+    base_model, config, eval_file, chunk_size, batch_size, output_dir, ckpt_path=None
+):
+    metric = datasets.load_metric("rouge")  # Load metric
 
-    #Decode eval inputs
-    decoded_inputs=[]
-    for idx, batch in enumerate(eval):
-        decoded_inputs.append(tokenizer.batch_decode(batch['input_ids'], skip_special_tokens=True))
+    tokenizer = AutoTokenizer.from_pretrained(base_model)  # Load Tokenizer
 
-    ##################################
-    ##### PREDICT AT CHECKPOINTS #####
-    ##################################
-    metric = datasets.load_metric('rouge')
+    # Load Encoder
+    config = AutoConfig.from_pretrained(config)
+    encoder = MambaForCausalLM.from_pretrained(
+        base_model,
+        config=config,
+    )
+    encoder.eval()
+    encoder.cuda()
 
+    # Load Decoder
     if not ckpt_path:
-        model = MambaForCausalLM.from_pretrained(base_model, config=config)
-        midx=0
+        # model = MambaForCausalLM.from_pretrained(base_model, config=config)
+        model = encoder
+        midx = 0
     else:
         model = MambaForCausalLM.from_pretrained(ckpt_path, config=config)
         midx = extract_step_number(ckpt_path)
-    model.cuda()
-    model.eval()
+        model.eval()
+        model.cuda()
 
-    reconstructed=[]
-    for idx, batch in enumerate(eval):
-        print('Idx, ', idx)
-        recons=reconstruct(model, tokenizer,batch)
+    # Load Dataset
+    raw_dataset = ed.read_dataset(eval_file)
+    tokenized_dataset = ed.tokenize_dataset(raw_dataset, tokenizer)
+    chunked_dataset = ed.chunk_dataset(tokenized_dataset, chunk_size)
+    batched_chunks = ed.batch_chunks(
+        chunked_dataset, batch_size
+    )  # batched_chunks[batch_number]['input_ids'][instance_number]
+
+    # Reconstruct text using decoder
+    reconstructed = []
+    for idx, batch in enumerate(batched_chunks):
+        print("Idx, ", idx)
+        with torch.no_grad():
+            input_ids = batch["input_ids"].to("cuda")
+            cache_params = ed.get_cache_params(input_ids, encoder)
+        recons = reconstruct(model, tokenizer, cache_params, chunk_size, batch_size)
         reconstructed.append(recons)
         del batch, recons
         torch.cuda.empty_cache()
         gc.collect()
         print(torch.cuda.memory_allocated())
 
-    output_file=os.path.join(output_dir, str(midx)+'.pkl')
+    output_file = os.path.join(output_dir, str(midx) + ".pkl")
     with open(output_file, "wb") as f:
-        pickle.dump(reconstructed, f) 
+        pickle.dump(reconstructed, f)
 
     del model
     torch.cuda.empty_cache()
     gc.collect()
 
-    for idx, batch in enumerate(decoded_inputs):
-        print(idx)
-        pred=reconstructed[idx]
-        metric.add(predictions=[pred], references=[batch])
+    # Score
+    for idx, batch in enumerate(batched_chunks):
+        reference_text = tokenizer.batch_decode(
+            batch["input_ids"], skip_special_tokens=True
+        )
+        reconstructed_text = reconstructed[idx]
+        metric.add(predictions=[reconstructed_text], references=[reference_text])
 
-    score=metric.compute()
+    score = metric.compute()
 
     json_data = json.dumps(score, indent=4)
-    output_file=os.path.join(output_dir, str(midx)+'.json')
-    with open(output_file, 'w') as file:
+    output_file = os.path.join(output_dir, str(midx) + ".json")
+    with open(output_file, "w") as file:
         file.write(json_data)
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Inference script for a pre-trained model')
-    parser.add_argument('--base_model', type=str, required=True, help='Base model name or path')
-    parser.add_argument('--config_path', type=str, required=True, help='Path to the model config file')
-    parser.add_argument('--data_path', type=str, required=True, help='Data for inference')
-    parser.add_argument('--output_dir', type=str, required=True, help='Directory to save the outputs')
-    parser.add_argument('--ckpt_path', type=str, required=False, help='Path to the checkpoint file')
-    
+    parser = argparse.ArgumentParser(
+        description="Inference script for a pre-trained model"
+    )
+    parser.add_argument(
+        "--base_model", type=str, required=True, help="Base model name or path"
+    )
+    parser.add_argument(
+        "--config", type=str, required=True, help="Path to the encoder config file"
+    )
+    parser.add_argument(
+        "--eval_file", type=str, required=True, help="Data for inference (.jsonl)"
+    )
+    parser.add_argument("--chunk_size", type=int, required=True, help="Sequence Length")
+    parser.add_argument("--batch_size", type=int, required=True, help="Sequence Length")
+    parser.add_argument(
+        "--output_dir", type=str, required=True, help="Directory to save the outputs"
+    )
+    parser.add_argument(
+        "--ckpt_path", type=str, required=False, help="Path to the checkpoint file"
+    )
+
     args = parser.parse_args()
-    
-    main(args.base_model, args.config_path, args.data_path, args.output_dir, args.ckpt_path,)
+
+    main(
+        args.base_model,
+        args.config,
+        args.eval_file,
+        args.chunk_size,
+        args.batch_size,
+        args.output_dir,
+        args.ckpt_path,
+    )

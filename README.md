@@ -1,14 +1,11 @@
 # Bookish Couscous
 
-### Encode Data
-```python encode_dataset.py --input_file <filename.jsonl> --model_id <model_id> --chunk_size <int> --batch_size <int> --output_file <output_files_dir> --checkpoints <int_for_sharding>```
-
 ### Train
 
-```python training.py --model_name_or_path <model_id> --config_path <path_config.jsonl> --train_path <training_files_dir> --data_shard_len <int> --output_dir <model_output_dir> --checkpointing_steps <int> --num_train_epochs <int> --learning_rate <lr>```
+```python training.py --model_name_or_path <model_id> --train_file <path_jsonl> --output_dir <directory> --checkpointing_steps <int> --num_train_epochs 1 --learning_rate <lr> --chunk_size <int> --batch_size <int> --decoder_config <path_json> --encoder_config <path_json>```
 
 ### Evaluate
-```python evaluate.py --base_model <model_id> --config_path <path_to_config> --data_path <path_to_encoded_data> --output_dir <dir> --ckpt_path <path_to_checkpoint>```
+```python evaluate.py --base_model <model_id>  --config <path_json> --eval_file <path_jsonl> --chunk_size <int> --batch_size <int> --output_dir <directory> --ckpt_path <path_to_checkpoint>```
 
 ### Developing using [VSCode Devcontainers](https://code.visualstudio.com/docs/devcontainers/containers)
 

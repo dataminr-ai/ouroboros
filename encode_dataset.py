@@ -27,7 +27,7 @@ def tokenize_dataset(dataset, tokenizer):
 
 
 def chunk_dataset(tokenized_dataset, block_size):
-    block_size = block_size - 1  # Make room for bos_token
+    block_size = block_size  # Make room for bos_token
     concatenated_input_ids = torch.cat(
         [tokens["input_ids"][0] for tokens in tokenized_dataset], dim=0
     )
@@ -38,7 +38,8 @@ def chunk_dataset(tokenized_dataset, block_size):
     total_length = len(concatenated_input_ids)
     chunks = {
         "input_ids": [
-             F.pad(concatenated_input_ids[i : i + block_size], (1, 0), value=0) # pad_token_id is 0
+             #F.pad(concatenated_input_ids[i : i + block_size], (1, 0), value=0)
+            concatenated_input_ids[i : i + block_size]
             for i in range(0, total_length, block_size)
         ],
         #"attention_mask": [
@@ -91,7 +92,7 @@ def move_cache(cache_params, device):
 def get_cache_params(batch, model):
     outputs = model(batch, output_hidden_states=True, use_cache=True, return_dict=True)
     hidden_states = outputs.cache_params
-    hidden_states = move_cache(hidden_states, 'cpu')
+    #hidden_states = move_cache(hidden_states, 'cpu')
     return hidden_states
 
 
