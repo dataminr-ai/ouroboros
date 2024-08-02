@@ -7,7 +7,8 @@ import gc
 import json
 import re
 import argparse
-import encode_dataset as ed
+
+import ouroboros.pencode_dataset as ed
 
 
 def reconstruct(model, tokenizer, cache, chunk_size, batch_size):
