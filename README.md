@@ -1,11 +1,38 @@
 # Bookish Couscous
 
+<<<<<<< HEAD
+=======
+### Installation
+
+Local install.
+```{bash}
+conda create -n ouroboros python=3.10
+conda activate ouroboros
+pip install -e .
+```
+
+To install mamba dependencies:
+```
+pip install mamba-ssm
+```
+
+### Train
+
+```python training.py --model_name_or_path <model_id> --train_file <path_jsonl> --output_dir <directory> --checkpointing_steps <int> --num_train_epochs 1 --learning_rate <lr> --chunk_size <int> --batch_size <int> --decoder_config <path_json> --encoder_config <path_json>```
+
+### Evaluate
+```python evaluate.py --base_model <model_id>  --config <path_json> --eval_file <path_jsonl> --chunk_size <int> --batch_size <int> --output_dir <directory> --ckpt_path <path_to_checkpoint>```
+>>>>>>> 89ca973771f7d5b6e9411b231d19c92c2e6cab2d
 
 ### Developing using [VSCode Devcontainers](https://code.visualstudio.com/docs/devcontainers/containers)
 
 0. Install Dev Containers extension. Make sure your dockerfile is up-to-date.
 1. If required, connect to the server via [VSCode Remote Development](https://code.visualstudio.com/docs/remote/remote-overview).
+<<<<<<< HEAD
 2. If you can run docker commands without sudo, jump directly to step 6. If not, in your home folder, create a file called `sudo-docker.sh` and the contents should be as follows: 
+=======
+2. If you can run docker commands without sudo, jump directly to step 6. If not, in your home folder, create a file called `sudo-docker.sh` and the contents should be as follows:
+>>>>>>> 89ca973771f7d5b6e9411b231d19c92c2e6cab2d
     ```bash
     #!/bin/sh
 
