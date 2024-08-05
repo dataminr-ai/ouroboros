@@ -9,7 +9,8 @@ dependencies = [
     "transformers",
     "accelerate",
     "datasets",
-    "packaging"
+    "packaging",
+    "mambapy"
 ]
 
 [tool.setuptools.packages.find]

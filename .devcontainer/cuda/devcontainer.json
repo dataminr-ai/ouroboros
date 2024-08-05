@@ -1,8 +1,8 @@
-{   
+{
     "name": "bookish-couscous CUDA",
     "build": {
-        "context": "../..", 
-        "dockerfile": "../../Dockerfile" 
+        "context": "../..",
+        "dockerfile": "../../Dockerfile"
     },
     "runArgs": [
         "--gpus", "all"

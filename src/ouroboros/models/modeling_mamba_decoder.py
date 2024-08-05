@@ -18,11 +18,11 @@ import math
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, Union
 
+from mambapy.pscan import pscan
 import torch
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import CrossEntropyLoss
-
 from transformers.activations import ACT2FN
 from transformers.cache_utils import MambaCache
 from transformers.modeling_utils import PreTrainedModel
@@ -33,17 +33,11 @@ from transformers.utils import (
     add_start_docstrings_to_model_forward,
     logging,
 )
-from transformers.utils.import_utils import is_mambapy_available
 
 from ouroboros.models.configuration_mamba_decoder import MambaDecoderConfig
 
 
 logger = logging.get_logger(__name__)
-
-if is_mambapy_available():
-    from mambapy.pscan import pscan
-else:
-    pscan = None
 
 
 _CHECKPOINT_FOR_DOC = "state-spaces/mamba-130m-hf"
@@ -184,7 +178,8 @@ class MambaDecoderMixer(nn.Module):
             scan_output = scan_output * self.act(gate)
         else:
             scan_outputs = []
-            for i in range(seq_len):
+            start = 1 if encoder_cache_params is not None else 0
+            for i in range(start, seq_len):
                 ssm_state = discrete_A[:, :, i, :] * ssm_state + deltaB_u[:, :, i, :]      # [batch, intermediade_size, ssm_state]
                 scan_output = torch.matmul(ssm_state.to(dtype), C[:, i, :].unsqueeze(-1))  # [batch, intermediade_size, 1]
                 scan_outputs.append(scan_output[:, :, 0])
