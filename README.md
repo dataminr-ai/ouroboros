@@ -40,7 +40,7 @@ pip install mamba-ssm
     ```
 3. In VSCode task bar menus, select code > settings
 4. In the search bar in the settings page, enter `docker path`. This setting should be visible in User tab as Dev > Containers: Docker Path (Applies to all profiles).
-5. Set the path to `/home/<yourusername>/sudo-docker.sh`.
+5. Set the path to `/home/<yourusername>/sudo-docker.sh` and make it executable (`chmod +x /home/<yourusername>/sudo-docker.sh`)
 6. Open current project as folder in VSCode (command + O).
 7. Press Command + Shift + P, and type + select `Dev Container: Open Current Folder in Container`. Press enter on root folder, choose cuda if asked.
 8. Wait for building the environment and once that is done, you can continue development inside the container.

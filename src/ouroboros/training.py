@@ -62,6 +62,7 @@ from transformers.utils.versions import require_version
 from tqdm import tqdm
 
 import ouroboros.encode_dataset as ed
+from ouroboros.models import MambaDecoderForCausalLM, MambaDecoderConfig
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.43.0.dev0")
@@ -72,6 +73,8 @@ require_version(
     "datasets>=2.14.0",
     "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt",
 )
+
+AutoModelForCausalLM.register(MambaDecoderConfig, MambaDecoderForCausalLM)
 
 MODEL_CONFIG_CLASSES = list(MODEL_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
@@ -357,22 +360,19 @@ def main():
             use_fast=not args.use_slow_tokenizer,
             trust_remote_code=args.trust_remote_code,
         )
-        decoder_config = AutoConfig.from_pretrained(args.decoder_config)
         model = AutoModelForCausalLM.from_pretrained(
             args.model_name_or_path,
             from_tf=bool(".ckpt" in args.model_name_or_path),
-            config=decoder_config,
             low_cpu_mem_usage=args.low_cpu_mem_usage,
             trust_remote_code=args.trust_remote_code,
+            use_mambapy=True,
         )
         model.train()
         model.cuda()
 
-        encoder_config = AutoConfig.from_pretrained(args.encoder_config)
         encoder = AutoModelForCausalLM.from_pretrained(
             args.model_name_or_path,
             from_tf=bool(".ckpt" in args.model_name_or_path),
-            config=encoder_config,
             low_cpu_mem_usage=args.low_cpu_mem_usage,
             trust_remote_code=args.trust_remote_code,
         )
@@ -452,8 +452,7 @@ def main():
                 input_ids = F.pad(input_ids, (1, 1), value=tokenizer.eos_token_id)
                 outputs = model(
                     input_ids=input_ids,
-                    cache_params=cache_params,
-                    use_cache=True,
+                    encoder_cache_params=cache_params,
                     return_dict=True,
                     labels=input_ids,
                 )
