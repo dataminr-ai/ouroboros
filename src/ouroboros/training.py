@@ -44,7 +44,7 @@ from tqdm.auto import tqdm
 from datasets import Dataset, DatasetDict
 import pickle
 import torch.nn.functional as F
-import gzip
+import datetime
 
 import transformers
 from transformers import (
@@ -341,7 +341,6 @@ def main():
             from_tf=bool(".ckpt" in args.encoder),
             low_cpu_mem_usage=args.low_cpu_mem_usage,
             trust_remote_code=args.trust_remote_code,
-            use_mambapy=True,
         )
         encoder.eval()
         encoder.cuda()
@@ -407,6 +406,8 @@ def main():
     if not args.resume_from_checkpoint:
         completed_steps, start_step = 0, 0
 
+    start_time = datetime.datetime.now()
+    logging.info("Start Time: " + str(start_time))
     with tqdm(total=args.max_train_steps, desc="Training Progress") as pbar:
         pbar.update(completed_steps)
         for epoch in range(0, args.num_train_epochs):
@@ -456,7 +457,7 @@ def main():
                 if completed_steps >= args.max_train_steps:
                     break
 
-    output_dir = os.path.join(args.output_dir, f"epoch_{epoch}")
+    output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
     model.save_pretrained(output_dir)
     logging.info(
         "Saving final checkpoint for epoch "
@@ -464,7 +465,11 @@ def main():
         + "in directory "
         + str(output_dir)
     )
+    end_time = datetime.datetime.now()
+    logging.info("Start Time: " + str(end_time))
 
+    elapsed_time = end_time - start_time
+    logging.info("Time Elapsed: "+str(elapsed_time))
 
 if __name__ == "__main__":
     main()
