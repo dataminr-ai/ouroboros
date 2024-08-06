@@ -86,56 +86,22 @@ def parse_args():
         description="Finetune a transformers model on a causal language modeling task"
     )
     parser.add_argument(
-        "--dataset_name",
-        type=str,
-        default=None,
-        help="The name of the dataset to use (via the datasets library).",
-    )
-    parser.add_argument(
-        "--dataset_config_name",
-        type=str,
-        default=None,
-        help="The configuration name of the dataset to use (via the datasets library).",
-    )
-    """
-    parser.add_argument(
-        "--train_file", type=str, default=None, help="A csv, txt or a json file containing the training data."
-    )
-    """
-    parser.add_argument(
         "--train_file",
         type=str,
         default=None,
         help="A json file containing the training data",
     )
     parser.add_argument(
-        "--validation_file",
-        type=str,
-        default=None,
-        help="A csv, txt or a json file containing the validation data.",
-    )
-    parser.add_argument(
-        "--validation_split_percentage",
-        default=5,
-        help="The percentage of the train set used as validation set in case there's no validation split",
-    )
-    parser.add_argument(
-        "--model_name_or_path",
+        "--decoder",
         type=str,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
         required=False,
     )
     parser.add_argument(
-        "--encoder_config",
+        "--encoder",
         type=str,
-        default=None,
-        help="Pretrained config path for decoder",
-    )
-    parser.add_argument(
-        "--decoder_config",
-        type=str,
-        default=None,
-        help="Pretrained config path for decoder",
+        help="Path to pretrained model or model identifier from huggingface.co/models.",
+        required=False,
     )
     parser.add_argument(
         "--tokenizer_name",
@@ -354,25 +320,25 @@ def main():
         handlers=[logging.FileHandler(log_file, "w"), logging.StreamHandler()],
     )
 
-    if args.model_name_or_path:
+    if args.decoder:
         tokenizer = AutoTokenizer.from_pretrained(
-            args.model_name_or_path,
+            args.decoder,
             use_fast=not args.use_slow_tokenizer,
             trust_remote_code=args.trust_remote_code,
         )
         model = AutoModelForCausalLM.from_pretrained(
-            args.model_name_or_path,
-            from_tf=bool(".ckpt" in args.model_name_or_path),
+            args.decoder,
+            from_tf=bool(".ckpt" in args.decoder),
             low_cpu_mem_usage=args.low_cpu_mem_usage,
             trust_remote_code=args.trust_remote_code,
             use_mambapy=True,
         )
         model.train()
         model.cuda()
-
+    if args.encoder:
         encoder = AutoModelForCausalLM.from_pretrained(
-            args.model_name_or_path,
-            from_tf=bool(".ckpt" in args.model_name_or_path),
+            args.encoder,
+            from_tf=bool(".ckpt" in args.encoder),
             low_cpu_mem_usage=args.low_cpu_mem_usage,
             trust_remote_code=args.trust_remote_code,
         )

@@ -16,7 +16,7 @@ pip install mamba-ssm
 
 ### Train
 
-```python training.py --model_name_or_path <model_id> --train_file <path_jsonl> --output_dir <directory> --checkpointing_steps <int> --num_train_epochs 1 --learning_rate <lr> --chunk_size <int> --batch_size <int> --decoder_config <path_json> --encoder_config <path_json>```
+```python src/ouroboros/training.py --decoder <model_id> --encoder <model_id> --train_file <path_jsonl> --output_dir <directory> --checkpointing_steps <int> --num_train_epochs 1 --learning_rate <lr> --chunk_size <int> --batch_size <int>```
 
 ### Evaluate
 ```python evaluate.py --base_model <model_id>  --config <path_json> --eval_file <path_jsonl> --chunk_size <int> --batch_size <int> --output_dir <directory> --ckpt_path <path_to_checkpoint>```
