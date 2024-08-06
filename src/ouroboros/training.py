@@ -341,6 +341,7 @@ def main():
             from_tf=bool(".ckpt" in args.encoder),
             low_cpu_mem_usage=args.low_cpu_mem_usage,
             trust_remote_code=args.trust_remote_code,
+            use_mambapy=True,
         )
         encoder.eval()
         encoder.cuda()
