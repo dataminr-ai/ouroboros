@@ -17,7 +17,7 @@ def reconstruct(model, tokenizer, cache, chunk_size, batch_size):
     cache.seqlen_offset = 0
     preds = []
     for idx in range(chunk_size + 1):
-        print(idx)
+        #print(idx)
         if idx == 0:
             inputs = torch.zeros((cache.conv_states[0].shape[0], 1)).int().to("cuda")
             cache_params = cache
@@ -26,7 +26,7 @@ def reconstruct(model, tokenizer, cache, chunk_size, batch_size):
         with torch.no_grad():
             outputs = model(
                 input_ids=inputs,
-                encoder_cache_params=cache_params,
+                cache_params=cache_params,
                 use_cache=True,
                 output_dict=True,
             )
@@ -52,7 +52,7 @@ def extract_step_number(path):
 
 
 def main(
-    base_model, eval_file, chunk_size, batch_size, output_dir, ckpt_path=None
+    base_model, eval_file, chunk_size, batch_size, output_dir, ckpt_path
 ):
     metric = datasets.load_metric("rouge")  # Load metric
 
@@ -133,7 +133,7 @@ if __name__ == "__main__":
         "--output_dir", type=str, required=True, help="Directory to save the outputs"
     )
     parser.add_argument(
-        "--ckpt_path", type=str, required=False, help="Path to the checkpoint file"
+        "--ckpt_path", type=str, required=True, help="Path to the checkpoint file"
     )
 
     args = parser.parse_args()
