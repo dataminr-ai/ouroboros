@@ -26,7 +26,7 @@ def reconstruct(model, tokenizer, cache, chunk_size, batch_size):
         with torch.no_grad():
             outputs = model(
                 input_ids=inputs,
-                cache_params=cache_params,
+                encoder_cache_params=cache_params,
                 use_cache=True,
                 output_dict=True,
             )
@@ -48,7 +48,7 @@ def extract_step_number(path):
     if match:
         return int(match.group(1))
     else:
-        raise ValueError("No step number found in the path")
+        return 0
 
 
 def main(
@@ -66,15 +66,10 @@ def main(
     encoder.cuda()
 
     # Load Decoder
-    if not ckpt_path:
-        # model = MambaForCausalLM.from_pretrained(base_model, config=config)
-        model = encoder
-        midx = 0
-    else:
-        model = AutoModelForCausalLM.from_pretrained(ckpt_path, use_mambapy=True)
-        midx = extract_step_number(ckpt_path)
-        model.eval()
-        model.cuda()
+    model = AutoModelForCausalLM.from_pretrained(ckpt_path, use_mambapy=True)
+    midx = extract_step_number(ckpt_path)
+    model.eval()
+    model.cuda()
 
     # Load Dataset
     raw_dataset = ed.read_dataset(eval_file)
