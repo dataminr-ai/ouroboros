@@ -3,3 +3,4 @@ accelerate
 datasets
 mamba-ssm
 causal_conv1d
+rouge_score
