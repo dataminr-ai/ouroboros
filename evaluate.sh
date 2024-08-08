@@ -1,24 +1,24 @@
 #!/bin/bash
 
-BASE_MODEL="state-spaces/mamba-130m-hf"
-CONFIG_PATH="model/eval_config.json"
-EVAL_FILE="eval_subset.jsonl"
-CHUNK_SIZE=4
-BATCH_SIZE=300
-OUTPUT_DIR="model/model3072_32_e6/evaluate"
+BASE_MODEL=$1
+EVAL_FILE=$2
+CHUNK_SIZE=$3
+BATCH_SIZE=$4
+MODEL_DIR=$5
+OUTPUT_DIR="${MODEL_DIR}/evaluate"
+
+mkdir -p "$OUTPUT_DIR"
 
 echo "Evaluating base model"
-python evaluate.py --base_model $BASE_MODEL  --config $CONFIG_PATH --eval_file $EVAL_FILE --chunk_size $CHUNK_SIZE --batch_size $BATCH_SIZE --output_dir $OUTPUT_DIR 
+python evaluate.py --base_model $BASE_MODEL --eval_file $EVAL_FILE --chunk_size $CHUNK_SIZE --batch_size $BATCH_SIZE --output_dir $OUTPUT_DIR 
 
-for step in $(seq 900 300 3300)
-do
-    echo "Evaluating step $step"
-    CKPT_PATH="model/model3072_32_e6/step_$step"
-    python evaluate.py --base_model $BASE_MODEL  --config $CONFIG_PATH --eval_file $EVAL_FILE --chunk_size $CHUNK_SIZE --batch_size $BATCH_SIZE --output_dir $OUTPUT_DIR --ckpt_path $CKPT_PATH 2>&1 | tee -a "${OUTPUT_DIR}/evaluation_output.log"
+for dir in "$MODEL_DIR"/*/; do
+    if [ -d "$dir" ]; then
+        dir_name=$(basename "$dir")        
+        if [[ $dir_name == step_* ]]; then
+            echo "Evaluating $dir_name"
+            CKPT_PATH="model/model3072_32_e6/step_$step"
+            python evaluate.py --base_model $BASE_MODEL --eval_file $EVAL_FILE --chunk_size $CHUNK_SIZE --batch_size $BATCH_SIZE --output_dir $OUTPUT_DIR --ckpt_path $dir_name 2>&1 | tee -a "${OUTPUT_DIR}/evaluation_output.log"
+        fi
+    fi
 done
-
-python evaluate.py --base_model $BASE_MODEL  --config $CONFIG_PATH --eval_file $EVAL_FILE --chunk_size $CHUNK_SIZE --batch_size $BATCH_SIZE --output_dir $OUTPUT_DIR 
-
-echo "Evaluating final checkpoint"
-CKPT_PATH="model/model3072_32_e6/step_3438"
-python evaluate.py --base_model $BASE_MODEL  --config $CONFIG_PATH --eval_file $EVAL_FILE --chunk_size $CHUNK_SIZE --batch_size $BATCH_SIZE --output_dir $OUTPUT_DIR -ckpt_path $CKPT_PATH

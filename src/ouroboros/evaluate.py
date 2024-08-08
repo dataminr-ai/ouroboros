@@ -1,6 +1,6 @@
 import datasets
 import pickle
-from transformers import AutoConfig, MambaForCausalLM, AutoTokenizer
+from transformers import AutoConfig, MambaForCausalLM, AutoTokenizer, AutoModelForCausalLM
 import torch
 import os
 import gc
@@ -8,8 +8,10 @@ import json
 import re
 import argparse
 
-import ouroboros.pencode_dataset as ed
+import ouroboros.encode_dataset as ed
+from ouroboros.models import MambaDecoderForCausalLM, MambaDecoderConfig
 
+AutoModelForCausalLM.register(MambaDecoderConfig, MambaDecoderForCausalLM)
 
 def reconstruct(model, tokenizer, cache, chunk_size, batch_size):
     cache.seqlen_offset = 0
@@ -50,17 +52,15 @@ def extract_step_number(path):
 
 
 def main(
-    base_model, config, eval_file, chunk_size, batch_size, output_dir, ckpt_path=None
+    base_model, eval_file, chunk_size, batch_size, output_dir, ckpt_path=None
 ):
     metric = datasets.load_metric("rouge")  # Load metric
 
     tokenizer = AutoTokenizer.from_pretrained(base_model)  # Load Tokenizer
 
     # Load Encoder
-    config = AutoConfig.from_pretrained(config)
     encoder = MambaForCausalLM.from_pretrained(
         base_model,
-        config=config,
     )
     encoder.eval()
     encoder.cuda()
@@ -71,7 +71,7 @@ def main(
         model = encoder
         midx = 0
     else:
-        model = MambaForCausalLM.from_pretrained(ckpt_path, config=config)
+        model = AutoModelForCausalLM.from_pretrained(ckpt_path, use_mambapy=True)
         midx = extract_step_number(ckpt_path)
         model.eval()
         model.cuda()
@@ -130,9 +130,6 @@ if __name__ == "__main__":
         "--base_model", type=str, required=True, help="Base model name or path"
     )
     parser.add_argument(
-        "--config", type=str, required=True, help="Path to the encoder config file"
-    )
-    parser.add_argument(
         "--eval_file", type=str, required=True, help="Data for inference (.jsonl)"
     )
     parser.add_argument("--chunk_size", type=int, required=True, help="Sequence Length")
@@ -148,7 +145,6 @@ if __name__ == "__main__":
 
     main(
         args.base_model,
-        args.config,
         args.eval_file,
         args.chunk_size,
         args.batch_size,
