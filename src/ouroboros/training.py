@@ -44,7 +44,7 @@ from tqdm.auto import tqdm
 from datasets import Dataset, DatasetDict
 import pickle
 import torch.nn.functional as F
-import gzip
+import datetime
 
 import transformers
 from transformers import (
@@ -86,56 +86,22 @@ def parse_args():
         description="Finetune a transformers model on a causal language modeling task"
     )
     parser.add_argument(
-        "--dataset_name",
-        type=str,
-        default=None,
-        help="The name of the dataset to use (via the datasets library).",
-    )
-    parser.add_argument(
-        "--dataset_config_name",
-        type=str,
-        default=None,
-        help="The configuration name of the dataset to use (via the datasets library).",
-    )
-    """
-    parser.add_argument(
-        "--train_file", type=str, default=None, help="A csv, txt or a json file containing the training data."
-    )
-    """
-    parser.add_argument(
         "--train_file",
         type=str,
         default=None,
         help="A json file containing the training data",
     )
     parser.add_argument(
-        "--validation_file",
-        type=str,
-        default=None,
-        help="A csv, txt or a json file containing the validation data.",
-    )
-    parser.add_argument(
-        "--validation_split_percentage",
-        default=5,
-        help="The percentage of the train set used as validation set in case there's no validation split",
-    )
-    parser.add_argument(
-        "--model_name_or_path",
+        "--decoder",
         type=str,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
         required=False,
     )
     parser.add_argument(
-        "--encoder_config",
+        "--encoder",
         type=str,
-        default=None,
-        help="Pretrained config path for decoder",
-    )
-    parser.add_argument(
-        "--decoder_config",
-        type=str,
-        default=None,
-        help="Pretrained config path for decoder",
+        help="Path to pretrained model or model identifier from huggingface.co/models.",
+        required=False,
     )
     parser.add_argument(
         "--tokenizer_name",
@@ -291,6 +257,12 @@ def parse_args():
         help="Batch size",
     )
     parser.add_argument(
+        "--slow",
+        type=bool,
+        default=False,
+        help="Use slow janky forward",
+    )
+    parser.add_argument(
         "--with_tracking",
         action="store_true",
         help="Whether to enable experiment trackers for logging.",
@@ -354,25 +326,25 @@ def main():
         handlers=[logging.FileHandler(log_file, "w"), logging.StreamHandler()],
     )
 
-    if args.model_name_or_path:
+    if args.decoder:
         tokenizer = AutoTokenizer.from_pretrained(
-            args.model_name_or_path,
+            args.decoder,
             use_fast=not args.use_slow_tokenizer,
             trust_remote_code=args.trust_remote_code,
         )
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model_name_or_path,
-            from_tf=bool(".ckpt" in args.model_name_or_path),
+        model = MambaDecoderForCausalLM.from_pretrained(
+            args.decoder,
+            from_tf=bool(".ckpt" in args.decoder),
             low_cpu_mem_usage=args.low_cpu_mem_usage,
             trust_remote_code=args.trust_remote_code,
             use_mambapy=True,
         )
         model.train()
         model.cuda()
-
+    if args.encoder:
         encoder = AutoModelForCausalLM.from_pretrained(
-            args.model_name_or_path,
-            from_tf=bool(".ckpt" in args.model_name_or_path),
+            args.encoder,
+            from_tf=bool(".ckpt" in args.encoder),
             low_cpu_mem_usage=args.low_cpu_mem_usage,
             trust_remote_code=args.trust_remote_code,
         )
@@ -440,6 +412,8 @@ def main():
     if not args.resume_from_checkpoint:
         completed_steps, start_step = 0, 0
 
+    start_time = datetime.datetime.now()
+    logging.info("Start Time: " + str(start_time))
     with tqdm(total=args.max_train_steps, desc="Training Progress") as pbar:
         pbar.update(completed_steps)
         for epoch in range(0, args.num_train_epochs):
@@ -450,12 +424,25 @@ def main():
                     cache_params = ed.get_cache_params(input_ids, encoder)
 
                 input_ids = F.pad(input_ids, (1, 1), value=tokenizer.eos_token_id)
-                outputs = model(
-                    input_ids=input_ids,
-                    encoder_cache_params=cache_params,
-                    return_dict=True,
-                    labels=input_ids,
-                )
+                if args.slow:
+                    print('Using slow forward')
+                    cache_position = torch.full((args.batch_size,1), args.chunk_size)
+                    outputs= model(
+                        input_ids=input_ids,
+                        cache_params=cache_params,
+                        cache_position=cache_position,
+                        janky=True,
+                        use_cache=True,
+                        labels=input_ids,
+                        return_dict=True)
+                else:
+                    print('Using fast forward')
+                    outputs = model(
+                        input_ids=input_ids,
+                        encoder_cache_params=cache_params,
+                        return_dict=True,
+                        labels=input_ids,
+                        )
 
                 loss = outputs.loss
 
@@ -489,7 +476,7 @@ def main():
                 if completed_steps >= args.max_train_steps:
                     break
 
-    output_dir = os.path.join(args.output_dir, f"epoch_{epoch}")
+    output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
     model.save_pretrained(output_dir)
     logging.info(
         "Saving final checkpoint for epoch "
@@ -497,7 +484,11 @@ def main():
         + "in directory "
         + str(output_dir)
     )
+    end_time = datetime.datetime.now()
+    logging.info("Start Time: " + str(end_time))
 
+    elapsed_time = end_time - start_time
+    logging.info("Time Elapsed: "+str(elapsed_time))
 
 if __name__ == "__main__":
     main()

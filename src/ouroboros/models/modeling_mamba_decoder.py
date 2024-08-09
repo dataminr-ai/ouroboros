@@ -93,7 +93,7 @@ class MambaDecoderMixer(nn.Module):
         self.use_bias = config.use_bias
 
     # fmt: off
-    def forward(
+    def fast_forward(
         self,
         input_states,
         cache_params: Optional[MambaCache]=None,
@@ -194,6 +194,69 @@ class MambaDecoderMixer(nn.Module):
         contextualized_states = self.out_proj(scan_output.transpose(1, 2))  # [batch, seq_len, hidden_size]
         return contextualized_states
     # fmt: on
+    def janky_forward(self, input_states, cache_params: Optional[MambaCache]=None):
+        batch_size, seq_len, _ = input_states.shape
+        dtype = input_states.dtype
+        # 1. Gated MLP's linear projection
+        projected_states = self.in_proj(input_states).transpose(1, 2)                   # [batch, 2 * intermediate_size, seq_len]
+        hidden_states, gate = projected_states.chunk(2, dim=1)
+
+
+        # 2. Convolution sequence transformation
+        ssm_state = cache_params.ssm_states[self.layer_idx].clone()
+        ssm_state = ssm_state.to(hidden_states.device)
+        hidden_states = self.act(self.conv1d(hidden_states)[..., :seq_len])         # [batch, intermediate_size, seq_len]
+
+
+        # 3. State Space Model sequence transformation
+        # 3.a. Selection:  [batch, seq_len, self.time_step_rank + self.ssm_state_size * 2]
+        ssm_parameters = self.x_proj(hidden_states.transpose(1, 2))
+        time_step, B, C = torch.split(
+            ssm_parameters, [self.time_step_rank, self.ssm_state_size, self.ssm_state_size], dim=-1
+        )
+        discrete_time_step = self.dt_proj(time_step)                                    # [batch, seq_len, intermediate_size]
+        discrete_time_step = nn.functional.softplus(discrete_time_step).transpose(1, 2) # [batch, intermediate_size, seq_len]
+
+
+        # 3.b. Discretization: B and C to [batch, seq_len, intermediate_size, ssm_state_size] (SRAM)
+        A = -torch.exp(self.A_log.float())                                              # [intermediate_size, ssm_state_size]
+        discrete_A = torch.exp(A[None, :, None, :] * discrete_time_step[:, :, :, None]) # [batch, intermediate_size, seq_len, ssm_state_size]
+        discrete_B = discrete_time_step[:, :, :, None] * B[:, None, :, :].float()       # [batch, intermediate_size, seq_len, ssm_state_size]
+        deltaB_u = discrete_B * hidden_states[:, :, :, None].float()
+
+
+        # 3.c perform the recurrence y ← SSM(A, B, C)(x)
+        scan_outputs = []
+        for i in range(seq_len):
+            ssm_state = discrete_A[:, :, i, :] * ssm_state + deltaB_u[:, :, i, :]      # [batch, intermediate_size, ssm_state]
+            scan_output = torch.matmul(ssm_state.to(dtype), C[:, i, :].unsqueeze(-1))  # [batch, intermediate_size, 1]
+            scan_outputs.append(scan_output[:, :, 0])
+        scan_output = torch.stack(scan_outputs, dim=-1)                                # [batch, intermediate_size, seq_len]
+        scan_output = scan_output + (hidden_states * self.D[None, :, None])
+        scan_output = (scan_output * self.act(gate))
+
+
+        if cache_params is not None:
+            cache_params.ssm_states[self.layer_idx].copy_(ssm_state)
+
+
+        # 4. Final linear projection
+        contextualized_states = self.out_proj(scan_output.transpose(1, 2))  # [batch, seq_len, hidden_size]
+        return contextualized_states
+    
+    def forward(
+        self,
+        input_states,
+        cache_params: Optional[MambaCache]=None,
+        cache_position:Optional[torch.LongTensor]=None,
+        encoder_cache_params: Optional[MambaCache]=None,
+        janky=False,
+    ):
+        if janky:
+            return self.janky_forward(input_states=input_states, cache_params=cache_params)
+        else:
+            return self.fast_forward(input_states, cache_params, cache_position, encoder_cache_params)
+
 
 
 class MambaDecoderRMSNorm(nn.Module):
@@ -231,13 +294,14 @@ class MambaDecoderBlock(nn.Module):
         cache_params: Optional[MambaCache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         encoder_cache_params: Optional[MambaCache] = None,
+        janky=False,
     ):
         residual = hidden_states
         hidden_states = self.norm(hidden_states.to(dtype=self.norm.weight.dtype))
         if self.residual_in_fp32:
             residual = residual.to(torch.float32)
 
-        hidden_states = self.mixer(hidden_states, cache_params=cache_params, cache_position=cache_position, encoder_cache_params=encoder_cache_params)
+        hidden_states = self.mixer(hidden_states, cache_params=cache_params, cache_position=cache_position, encoder_cache_params=encoder_cache_params, janky=janky)
         hidden_states = residual + hidden_states
         return hidden_states
 
@@ -449,6 +513,7 @@ class MambaDecoderModel(MambaDecoderPreTrainedModel):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         encoder_cache_params: Optional[MambaCache] = None,
+        janky=False,
         **kwargs,  # `attention_mask` is passed by the tokenizer and we don't want it
     ) -> Union[Tuple, MambaDecoderOutput]:
         output_hidden_states = (
@@ -494,7 +559,7 @@ class MambaDecoderModel(MambaDecoderPreTrainedModel):
                     mixer_block.__call__, hidden_states, cache_params, cache_position
                 )
             else:
-                hidden_states = mixer_block(hidden_states, cache_params=cache_params, cache_position=cache_position, encoder_cache_params=encoder_cache_params)
+                hidden_states = mixer_block(hidden_states, cache_params=cache_params, cache_position=cache_position, encoder_cache_params=encoder_cache_params, janky=janky)
 
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
@@ -613,6 +678,7 @@ class MambaDecoderForCausalLM(MambaDecoderPreTrainedModel):
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.Tensor] = None,
         encoder_cache_params: Optional[MambaCache] = None,
+        janky=False,
         **kwargs,  # for now we need this for generation
     ) -> Union[Tuple, MambaDecoderCausalLMOutput]:
         r"""
@@ -632,6 +698,7 @@ class MambaDecoderForCausalLM(MambaDecoderPreTrainedModel):
             use_cache=use_cache,
             cache_position=cache_position,
             encoder_cache_params=encoder_cache_params,
+            janky=janky
         )
         hidden_states = mamba_outputs[0]
 

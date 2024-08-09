@@ -28,3 +28,23 @@ def test_mixer_changes():
     print(encoder_output.logits)
     print(decoder_output.logits)
     assert torch.allclose(encoder_output.logits, decoder_output.logits, atol=1e-3)
+
+def test_fast_vs_slow(decoder):
+    config = MambaDecoderConfig(use_mambapy=True)
+    model = MambaDecoderForCausalLM.from_pretrained(decoder, use_mambapy=True) 
+    model.train()
+
+    # Create a random input
+    batch_size = 2
+    sequence_length = 32
+    input_ids = torch.randint(0, config.vocab_size, size=(batch_size, sequence_length))
+
+    encoder_output = model(input_ids, use_cache=True)
+    encoder_cache_params = encoder_output["cache_params"]
+
+    cache_position = torch.full((batch_size, 1), sequence_length)
+    slow_output = model(input_ids, cache_params=encoder_cache_params, cache_position=cache_position, janky=True, use_cache=True)
+    fast_output = model(input_ids, enocder_cache_params=encoder_cache_params)
+    print(slow_output.logits)
+    print(fast_output.logits)
+    assert torch.allclose(slow_output.logits, slow_output.logits, atol=1e-3)
