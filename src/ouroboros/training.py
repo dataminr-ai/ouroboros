@@ -425,8 +425,7 @@ def main():
 
                 input_ids = F.pad(input_ids, (1, 1), value=tokenizer.eos_token_id)
                 if args.forward_type == "slow-training":
-                    print('Using slow forward')
-                    cache_position = torch.full((args.batch_size,1), args.chunk_size)
+                    cache_position = torch.tensor([args.chunk_size])
                     outputs= model(
                         input_ids=input_ids,
                         cache_params=cache_params,
@@ -436,7 +435,6 @@ def main():
                         labels=input_ids,
                         return_dict=True)
                 else:
-                    print('Using fast forward')
                     outputs = model(
                         input_ids=input_ids,
                         encoder_cache_params=cache_params,

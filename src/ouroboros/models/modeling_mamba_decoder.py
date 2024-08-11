@@ -319,7 +319,6 @@ class MambaDecoderMixer(nn.Module):
         encoder_cache_params: Optional[MambaCache]=None,
         forward_type="fast",
     ):
-        
         if forward_type == "slow-inference":
             return self.slow_inference(input_states, cache_params=cache_params)
         elif forward_type == "slow-training":
@@ -768,7 +767,7 @@ class MambaDecoderForCausalLM(MambaDecoderPreTrainedModel):
             use_cache=use_cache,
             cache_position=cache_position,
             encoder_cache_params=encoder_cache_params,
-            forward_type="fast"
+            forward_type=forward_type
         )
         hidden_states = mamba_outputs[0]
 
