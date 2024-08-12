@@ -62,7 +62,8 @@ from transformers.utils.versions import require_version
 from tqdm import tqdm
 
 import ouroboros.encode_dataset as ed
-from ouroboros.models import MambaDecoderForCausalLM, MambaDecoderConfig
+#from ouroboros.models import MambaDecoderForCausalLM, MambaDecoderConfig
+from ouroboros.models.modeling_mamba_decoder_v1 import MambaForCausalLM
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.43.0.dev0")
@@ -74,7 +75,6 @@ require_version(
     "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt",
 )
 
-AutoModelForCausalLM.register(MambaDecoderConfig, MambaDecoderForCausalLM)
 
 MODEL_CONFIG_CLASSES = list(MODEL_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
@@ -257,12 +257,6 @@ def parse_args():
         help="Batch size",
     )
     parser.add_argument(
-        "--forward_type",
-        type=str,
-        default="fast",
-        help="Type of forward",
-    )
-    parser.add_argument(
         "--with_tracking",
         action="store_true",
         help="Whether to enable experiment trackers for logging.",
@@ -332,7 +326,7 @@ def main():
             use_fast=not args.use_slow_tokenizer,
             trust_remote_code=args.trust_remote_code,
         )
-        model = MambaDecoderForCausalLM.from_pretrained(
+        model = MambaForCausalLM.from_pretrained(
             args.decoder,
             from_tf=bool(".ckpt" in args.decoder),
             low_cpu_mem_usage=args.low_cpu_mem_usage,
@@ -342,7 +336,7 @@ def main():
         model.train()
         model.cuda()
     if args.encoder:
-        encoder = AutoModelForCausalLM.from_pretrained(
+        encoder = MambaForCausalLM.from_pretrained(
             args.encoder,
             from_tf=bool(".ckpt" in args.encoder),
             low_cpu_mem_usage=args.low_cpu_mem_usage,
@@ -424,24 +418,14 @@ def main():
                     input_ids = F.pad(input_ids, (1, 0), value=tokenizer.bos_token_id) #Add start token before encoding
                     cache_params = ed.get_cache_params(input_ids, encoder)
 
-                input_ids = F.pad(input_ids, (0, 1), value=tokenizer.eos_token_id) #Add end token after encoding
-                if args.forward_type == "slow-training":
-                    cache_position = torch.tensor([args.chunk_size])
-                    outputs= model(
-                        input_ids=input_ids,
-                        cache_params=cache_params,
-                        cache_position=cache_position,
-                        forward_type="slow-training",
-                        use_cache=True,
-                        labels=input_ids,
-                        return_dict=True)
-                else:
-                    outputs = model(
-                        input_ids=input_ids,
-                        encoder_cache_params=cache_params,
-                        return_dict=True,
-                        labels=input_ids,
-                        )
+                input_ids = F.pad(input_ids, (0, 1), value=tokenizer.eos_token_id) #Add end token before encoding
+                outputs= model(
+                    input_ids=input_ids,
+                    cache_params=cache_params,
+                    use_cache=True,
+                    labels=input_ids,
+                    return_dict=True,
+                    forward_type="slow-training")
 
                 loss = outputs.loss
 
