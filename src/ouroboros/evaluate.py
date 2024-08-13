@@ -14,34 +14,37 @@ from ouroboros.models import MambaDecoderForCausalLM, MambaDecoderConfig
 AutoModelForCausalLM.register(MambaDecoderConfig, MambaDecoderForCausalLM)
 
 def reconstruct(model, tokenizer, cache, chunk_size, batch_size):
-    cache.seqlen_offset = 0
-    preds = []
-    for idx in range(chunk_size + 1):
-        #print(idx)
-        if idx == 0:
-            inputs = torch.zeros((cache.conv_states[0].shape[0], 1)).int().to("cuda")
-            cache_params = cache
-        else:
-            inputs = next_tokens
-        with torch.no_grad():
-            outputs = model(
-                input_ids=inputs,
-                cache_params=cache_params,
-                use_cache=True,
-                output_dict=True,
-            )
-        cache_params = outputs.cache_params
-        next_tokens = torch.argmax(outputs.logits[:, -1, :], dim=-1).view(-1, 1)
-        preds.append(next_tokens.to("cpu"))
-    gen = torch.cat(preds, dim=1).to("cpu")
-    recons = []
-    for i in range(gen.shape[0]):
-        recons.append(tokenizer.decode(gen[i]))
-    del inputs, cache, cache_params, outputs, next_tokens, gen, preds
-    torch.cuda.empty_cache()
-    gc.collect()
-    return recons
-
+   cache.seqlen_offset = 0
+   preds = []
+   for idx in range(chunk_size + 1):
+       #print(idx)
+       if idx == 0:
+           inputs = torch.zeros((cache.conv_states[0].shape[0], 1)).int().to("cuda")
+           cache_params = cache
+       else:
+           inputs = next_tokens
+       with torch.no_grad():
+           cache_position = torch.tensor([0,1,2,3,4])
+           outputs = model(
+               input_ids=inputs,
+               cache_params=cache_params,
+               use_cache=True,
+               cache_position=cache_position,
+               output_dict=True,
+               use_mambapy=True,
+               forward_type="fast"
+           )
+       cache_params = outputs.cache_params
+       next_tokens = torch.argmax(outputs.logits[:, -1, :], dim=-1).view(-1, 1)
+       preds.append(next_tokens.to("cpu"))
+   gen = torch.cat(preds, dim=1).to("cpu")
+   recons = []
+   for i in range(gen.shape[0]):
+       recons.append(tokenizer.decode(gen[i]))
+   del inputs, cache, cache_params, outputs, next_tokens, gen, preds
+   torch.cuda.empty_cache()
+   gc.collect()
+   return recons
 
 def extract_step_number(path):
     match = re.search(r"step_(\d+)", path)

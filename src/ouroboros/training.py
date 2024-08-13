@@ -426,7 +426,7 @@ def main():
 
                 input_ids = F.pad(input_ids, (0, 1), value=tokenizer.eos_token_id) #Add end token after encoding
                 if args.forward_type == "slow-training":
-                    cache_position = torch.tensor([args.chunk_size])
+                    cache_position = torch.tensor([0,1,2,3])
                     outputs= model(
                         input_ids=input_ids,
                         cache_params=cache_params,
