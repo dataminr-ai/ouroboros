@@ -14,6 +14,7 @@
 # limitations under the License.
 """PyTorch MAMBA model."""
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, Union
@@ -30,14 +31,13 @@ from transformers.utils import (
     ModelOutput,
     add_code_sample_docstrings,
     add_start_docstrings,
-    add_start_docstrings_to_model_forward,
-    logging,
+    add_start_docstrings_to_model_forward
 )
 
 from ouroboros.models.configuration_mamba_decoder import MambaDecoderConfig
 
 
-logger = logging.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 _CHECKPOINT_FOR_DOC = "state-spaces/mamba-130m-hf"
@@ -92,6 +92,11 @@ class MambaDecoderMixer(nn.Module):
         self.out_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=config.use_bias)
         self.use_bias = config.use_bias
 
+        if self.use_mambapy:
+            logger.warning_once('Using mambapy')
+        else:
+            logger.warning_once('Not using mambapy')
+
     # fmt: off
     def forward(
         self,
@@ -105,6 +110,7 @@ class MambaDecoderMixer(nn.Module):
         """
         assert (cache_params is None) or (encoder_cache_params is None), "Cannot have cache_params and encoder_cache_params at the same time"
         batch_size, seq_len, _ = input_states.shape
+        logger.info(f'Seq len: {seq_len}')
         dtype = input_states.dtype
         # 1. Gated MLP's linear projection
         projected_states = self.in_proj(input_states).transpose(1, 2)                   # [batch, 2 * intermediate_size, seq_len]
@@ -160,6 +166,7 @@ class MambaDecoderMixer(nn.Module):
 
         # NOTE(rlogan): Here is the trick. To condition on the encoder ssm state in pscan we prepend it to deltaB_u
         if encoder_cache_params is not None:
+            logger.info('Encoder cache params recieved')
             prefix = ssm_state.unsqueeze(dim=2)
             deltaB_u = torch.concat((prefix, deltaB_u), dim=2)
             # We also need discrete A to have the right length, we'll prepend it with zeros to be safe
@@ -170,6 +177,7 @@ class MambaDecoderMixer(nn.Module):
 
         # 3.c perform the recurrence y ← SSM(A, B, C)(x)
         if self.use_mambapy and self.training and cache_params is None:
+            logger.info('Fast forward in use')
             hs = pscan(discrete_A.transpose(1, 2), deltaB_u.transpose(1, 2)) # [batch, seq_len (+1, opt), intermediate_size, ssm_state_size]
             if encoder_cache_params is not None:  # NOTE(rlogan): Discard the initial ssm state
                 hs = hs[:,1:,:,:]
@@ -178,12 +186,15 @@ class MambaDecoderMixer(nn.Module):
             scan_output = scan_output * self.act(gate)
         else:
             scan_outputs = []
-            start = 1 if encoder_cache_params is not None else 0
-            for i in range(start, seq_len):
-                ssm_state = discrete_A[:, :, i, :] * ssm_state + deltaB_u[:, :, i, :]      # [batch, intermediade_size, ssm_state]
+            offset = 0 if encoder_cache_params is None else 1
+            for i in range(seq_len):
+                ssm_state = discrete_A[:, :, i + offset, :] * ssm_state + deltaB_u[:, :, i + offset, :]      # [batch, intermediade_size, ssm_state]
                 scan_output = torch.matmul(ssm_state.to(dtype), C[:, i, :].unsqueeze(-1))  # [batch, intermediade_size, 1]
                 scan_outputs.append(scan_output[:, :, 0])
-            scan_output = torch.stack(scan_outputs, dim=-1)                                # [batch, seq_len, intermediade_size]
+            scan_output = torch.stack(scan_outputs, dim=-1)                                # [batch, intermediate_size, seq_len]
+            logger.info(f'Scan output: {scan_output.size()}')
+            logger.info(f'Hidden states: {hidden_states.size()}')
+            logger.info(f'D: {self.D.size()}')
             scan_output = scan_output + (hidden_states * self.D[None, :, None])
             scan_output = (scan_output * self.act(gate))
 
