@@ -110,7 +110,6 @@ class MambaDecoderMixer(nn.Module):
         """
         assert (cache_params is None) or (encoder_cache_params is None), "Cannot have cache_params and encoder_cache_params at the same time"
         batch_size, seq_len, _ = input_states.shape
-        logger.info(f'Seq len: {seq_len}')
         dtype = input_states.dtype
         # 1. Gated MLP's linear projection
         projected_states = self.in_proj(input_states).transpose(1, 2)                   # [batch, 2 * intermediate_size, seq_len]
@@ -166,7 +165,6 @@ class MambaDecoderMixer(nn.Module):
 
         # NOTE(rlogan): Here is the trick. To condition on the encoder ssm state in pscan we prepend it to deltaB_u
         if encoder_cache_params is not None:
-            logger.info('Encoder cache params recieved')
             prefix = ssm_state.unsqueeze(dim=2)
             deltaB_u = torch.concat((prefix, deltaB_u), dim=2)
             # We also need discrete A to have the right length, we'll prepend it with zeros to be safe
@@ -177,7 +175,6 @@ class MambaDecoderMixer(nn.Module):
 
         # 3.c perform the recurrence y ← SSM(A, B, C)(x)
         if self.use_mambapy and self.training and cache_params is None:
-            logger.info('Fast forward in use')
             hs = pscan(discrete_A.transpose(1, 2), deltaB_u.transpose(1, 2)) # [batch, seq_len (+1, opt), intermediate_size, ssm_state_size]
             if encoder_cache_params is not None:  # NOTE(rlogan): Discard the initial ssm state
                 hs = hs[:,1:,:,:]
@@ -192,9 +189,6 @@ class MambaDecoderMixer(nn.Module):
                 scan_output = torch.matmul(ssm_state.to(dtype), C[:, i, :].unsqueeze(-1))  # [batch, intermediade_size, 1]
                 scan_outputs.append(scan_output[:, :, 0])
             scan_output = torch.stack(scan_outputs, dim=-1)                                # [batch, intermediate_size, seq_len]
-            logger.info(f'Scan output: {scan_output.size()}')
-            logger.info(f'Hidden states: {hidden_states.size()}')
-            logger.info(f'D: {self.D.size()}')
             scan_output = scan_output + (hidden_states * self.D[None, :, None])
             scan_output = (scan_output * self.act(gate))
 

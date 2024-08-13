@@ -325,16 +325,12 @@ def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
 def main():
     args = parse_args()
 
-    # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
-    # information sent is the one passed as arguments along with your Python/PyTorch versions.
-    send_example_telemetry("run_clm_no_trainer", args)
-
     # log_file = os.path.join(args.output_dir, "output.log")
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        # handlers=[logging.FileHandler(log_file, "w"), logging.StreamHandler()],
-    )
+    # logging.basicConfig(
+    #     level=logging.DEBUG,
+    #     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    #     # handlers=[logging.FileHandler(log_file, "w"), logging.StreamHandler()],
+    # )
 
     if is_fast_path_available:
         logger.info('Fast path is available.')
@@ -350,7 +346,7 @@ def main():
         args.decoder,
         low_cpu_mem_usage=args.low_cpu_mem_usage,
         trust_remote_code=args.trust_remote_code,
-        use_mambapy=False,
+        use_mambapy=True,
     )
     logger.info(model.config.to_dict())
     logger.info(model)
@@ -430,14 +426,17 @@ def main():
         pbar.update(completed_steps)
         for epoch in range(0, args.num_train_epochs):
             for step, batch in enumerate(batched_chunks):
+                batch = {k: v.cuda() for k, v in batch.items()}
                 logger.info("Step: " + str(completed_steps))
                 logger.info("Encode")
                 with torch.no_grad():
-                    input_ids = batch["input_ids"].to("cuda")
-                    cache_params = ed.get_cache_params(input_ids, encoder)
+                    cache_params = ed.get_cache_params(batch['input_ids'], encoder)
+                logger.info(batch['input_ids'].device)
+                logger.info(cache_params)
 
                 logger.info("Forward")
-                input_ids = F.pad(input_ids, (1, 1), value=tokenizer.eos_token_id)
+                input_ids = F.pad(batch['input_ids'], (1, 1), value=tokenizer.eos_token_id)
+                logger.info(batch['input_ids'].device)
                 outputs = model(
                     input_ids=input_ids,
                     encoder_cache_params=cache_params,
