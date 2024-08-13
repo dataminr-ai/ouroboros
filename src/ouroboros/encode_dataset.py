@@ -3,11 +3,8 @@ from transformers import AutoConfig, MambaForCausalLM, AutoTokenizer
 import torch
 import json
 import pickle
-import transformers
-import torch.nn.functional as F
 import gc
 import os
-import gzip
 
 
 def read_dataset(filename):
@@ -32,21 +29,13 @@ def chunk_dataset(tokenized_dataset, block_size):
     concatenated_input_ids = torch.cat(
         [tokens["input_ids"][0] for tokens in tokenized_dataset], dim=0
     )
-    # concatenated_attention_masks = torch.cat(
-    #   [tokens["attention_mask"][0] for tokens in tokenized_dataset], dim=0
-    # )
 
     total_length = len(concatenated_input_ids)
     chunks = {
         "input_ids": [
-            # F.pad(concatenated_input_ids[i : i + block_size], (1, 0), value=0)
             concatenated_input_ids[i : i + block_size]
             for i in range(0, total_length, block_size)
         ],
-        # "attention_mask": [
-        #   F.pad(concatenated_attention_masks[i : i + block_size], (1, 0), value=1)
-        #  for i in range(0, total_length, block_size)
-        # ],
     }
     # Add padding for last chunk if less than block_size
     block_size = block_size + 1
@@ -76,9 +65,6 @@ def batch_chunks(chunked_dataset, batch_size):
                 "input_ids": torch.stack(
                     chunked_dataset["input_ids"][i : i + batch_size]
                 ),
-                # "attention_mask": torch.stack(
-                #   chunked_dataset["attention_mask"][i : i + batch_size]
-                # ),
             }
         )
     return batched_chunks
@@ -95,7 +81,7 @@ def move_cache(cache_params, device):
 def get_cache_params(batch, model):
     outputs = model(batch, output_hidden_states=True, use_cache=True, return_dict=True)
     hidden_states = outputs.cache_params
-    # hidden_states = move_cache(hidden_states, 'cpu')
+    hidden_states.conv_states.zero_()
     return hidden_states
 
 

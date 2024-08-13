@@ -27,7 +27,6 @@ import logging
 import math
 import os
 
-import datasets
 import torch
 import torch.nn.functional as F
 from transformers import (
@@ -38,7 +37,6 @@ from transformers import (
     get_scheduler,
 )
 from transformers.models.mamba.modeling_mamba import is_fast_path_available
-from transformers.utils import send_example_telemetry
 from transformers.utils.versions import require_version
 from tqdm import tqdm
 
