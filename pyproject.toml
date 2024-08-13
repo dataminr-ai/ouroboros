@@ -1,16 +1,29 @@
 [build-system]
-requires = ["setuptools"]
+requires = [
+    "setuptools>=42",
+    "wheel",
+    "setuptools-git-versioning>=2.0,<3"
+]
 build-backend = "setuptools.build_meta"
+
+[tool.distutils.bdist_wheel]
+universal = true
+
+[tool.setuptools-git-versioning]
+enabled = true
+dirty_template = "{tag}.post{ccount}+git.{sha}.dirty-{timestamp:%Y-%m-%dT%H-%M-%S}"
 
 [project]
 name = "ouroboros"
-version = "0.0.1"
+dynamic = ["version"]
 dependencies = [
     "transformers",
     "accelerate",
     "datasets",
     "packaging",
-    "mambapy"
+    "mambapy",
+    "mamba-ssm",
+    "causal-conv1d"
 ]
 
 [tool.setuptools.packages.find]
