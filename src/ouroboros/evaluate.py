@@ -1,4 +1,5 @@
 import datasets
+import logging
 import pickle
 from transformers import AutoConfig, MambaForCausalLM, AutoTokenizer, AutoModelForCausalLM
 import torch
@@ -13,33 +14,25 @@ from ouroboros.models import MambaDecoderForCausalLM, MambaDecoderConfig
 
 AutoModelForCausalLM.register(MambaDecoderConfig, MambaDecoderForCausalLM)
 
-def reconstruct(model, tokenizer, cache, chunk_size, batch_size):
-    cache.seqlen_offset = 0
-    preds = []
+def reconstruct(model, tokenizer, cache_params, chunk_size):
+    input_ids = torch.full((cache_params.conv_states.size(1), 1), tokenizer.bos_token_id, device=cache_params.conv_states.device)
+    cache_position = torch.arange(0, model.config.conv_kernel, device=input_ids.device)
+    generated = []
     for idx in range(chunk_size + 1):
-        #print(idx)
-        if idx == 0:
-            inputs = torch.zeros((cache.conv_states[0].shape[0], 1)).int().to("cuda")
-            cache_params = cache
-        else:
-            inputs = next_tokens
-        with torch.no_grad():
-            outputs = model(
-                input_ids=inputs,
-                cache_params=cache_params,
-                use_cache=True,
-                output_dict=True,
-            )
+        outputs = model(
+            input_ids=input_ids,
+            cache_params=cache_params,
+            cache_position=cache_position,  # NOTE(rlogan): What next though?
+            use_cache=True,
+            output_dict=True,
+        )
+        input_ids = outputs.logits.argmax(dim=-1)
         cache_params = outputs.cache_params
-        next_tokens = torch.argmax(outputs.logits[:, -1, :], dim=-1).view(-1, 1)
-        preds.append(next_tokens.to("cpu"))
-    gen = torch.cat(preds, dim=1).to("cpu")
-    recons = []
-    for i in range(gen.shape[0]):
-        recons.append(tokenizer.decode(gen[i]))
-    del inputs, cache, cache_params, outputs, next_tokens, gen, preds
-    torch.cuda.empty_cache()
-    gc.collect()
+        cache_position = cache_position[-1:] + 1
+        generated.append(input_ids)
+    generated = torch.cat(generated, dim=-1)
+    print("Generated Ids: ", generated)
+    recons = tokenizer.batch_decode(generated)
     return recons
 
 
@@ -54,7 +47,7 @@ def extract_step_number(path):
 def main(
     base_model, eval_file, chunk_size, batch_size, output_dir, ckpt_path
 ):
-    metric = datasets.load_metric("rouge")  # Load metric
+    metric = datasets.load_metric("rouge", trust_remote_code=True)  # Load metric
 
     tokenizer = AutoTokenizer.from_pretrained(base_model)  # Load Tokenizer
 
@@ -63,16 +56,18 @@ def main(
         base_model,
     )
     encoder.eval()
-    encoder.cuda()
+    # encoder.cuda()
 
     # Load Decoder
-    model = AutoModelForCausalLM.from_pretrained(ckpt_path, use_mambapy=True)
-    midx = extract_step_number(ckpt_path)
+    model = MambaDecoderForCausalLM.from_pretrained(ckpt_path)
+    # midx = extract_step_number(ckpt_path)
     model.eval()
-    model.cuda()
+    # model.cuda()
+
+    logging.basicConfig(level=logging.INFO)
 
     # Load Dataset
-    raw_dataset = ed.read_dataset(eval_file)
+    raw_dataset = ed.read_dataset(eval_file)[:10]
     tokenized_dataset = ed.tokenize_dataset(raw_dataset, tokenizer)
     chunked_dataset = ed.chunk_dataset(tokenized_dataset, chunk_size)
     batched_chunks = ed.batch_chunks(
@@ -84,22 +79,16 @@ def main(
     for idx, batch in enumerate(batched_chunks):
         print("Idx, ", idx)
         with torch.no_grad():
-            input_ids = batch["input_ids"].to("cuda")
+            input_ids = batch["input_ids"]  # .to("cuda")
             cache_params = ed.get_cache_params(input_ids, encoder)
-        recons = reconstruct(model, tokenizer, cache_params, chunk_size, batch_size)
+        print(f'Input ids: {input_ids}')
+        recons = reconstruct(model, tokenizer, cache_params, chunk_size)
         reconstructed.append(recons)
-        del batch, recons
-        torch.cuda.empty_cache()
-        gc.collect()
         print(torch.cuda.memory_allocated())
 
     output_file = os.path.join(output_dir, str(midx) + ".pkl")
     with open(output_file, "wb") as f:
         pickle.dump(reconstructed, f)
-
-    del model
-    torch.cuda.empty_cache()
-    gc.collect()
 
     # Score
     for idx, batch in enumerate(batched_chunks):
