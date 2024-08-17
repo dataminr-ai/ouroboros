@@ -471,7 +471,7 @@ def main():
                 if completed_steps >= args.max_train_steps:
                     break
 
-    output_dir = os.path.join(args.output_dir, f"epoch_{epoch}")
+    output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
     model.save_pretrained(output_dir)
     logging.info(
         "Saving final checkpoint for epoch "

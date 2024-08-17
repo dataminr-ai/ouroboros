@@ -4,14 +4,14 @@ import argparse
 
 def main(base_model, eval_file, chunk_size, batch_size, model_dir):
     
-    base_decoder=os.path.join(model_dir, 'decoder')
+    #base_decoder=os.path.join(model_dir, 'decoder')
     trained_decoder=os.path.join(model_dir, str(chunk_size))
     output_dir=os.path.join(trained_decoder, 'evaluate')
 
     os.makedirs(output_dir, exist_ok=True)
 
     print("Evaluating Base Model")
-    eval(base_model, eval_file, chunk_size, batch_size, output_dir, base_decoder)
+    eval(base_model, eval_file, chunk_size, batch_size, output_dir, base_model)
 
     for dir in os.listdir(trained_decoder):
         if dir.startswith("step_"):
