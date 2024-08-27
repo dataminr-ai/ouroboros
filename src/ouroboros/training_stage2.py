@@ -42,7 +42,9 @@ from tqdm import tqdm
 
 import ouroboros.encode_dataset as ed
 from ouroboros.models import MambaDecoderForCausalLM, MambaDecoderConfig
-
+from ouroboros.models.modeling_mamba_cache_optimizer import MambaCacheOptimizer
+from datasets import load_dataset
+from torch.utils.data import DataLoader
 
 logger = logging.getLogger(__name__)
 logging.getLogger("py4j").setLevel(logging.ERROR)
@@ -76,12 +78,7 @@ def parse_args():
         default=None,
         help="The configuration name of the dataset to use (via the datasets library).",
     )
-    parser.add_argument(
-        "--train_file",
-        type=str,
-        default=None,
-        help="A json file containing the training data",
-    )
+
     parser.add_argument(
         "--validation_file",
         type=str,
@@ -260,11 +257,7 @@ def parse_args():
         default=None,
         help="If the training should continue from a checkpoint folder.",
     )
-    parser.add_argument(
-        "--chunk_size",
-        type=int,
-        help="Sequence Length for training",
-    )
+
     parser.add_argument(
         "--batch_size",
         type=int,
@@ -341,49 +334,64 @@ def main():
         trust_remote_code=args.trust_remote_code,
     )
 
+    #encoder = AutoModelForCausalLM.from_pretrained(
+     #   args.encoder,
+      #  low_cpu_mem_usage=args.low_cpu_mem_usage,
+       # trust_remote_code=args.trust_remote_code,
+    #)
+    #encoder.eval()
+    #encoder.cuda()
+
+    #prompt = 'Fill in the blank:'
+    #tokenized_prompt = tokenizer(prompt, return_tensors="pt")['input_ids'].to('cuda')
+    #cache_params = ed.get_cache_params(tokenized_prompt, encoder)
+
     if not args.resume_from_checkpoint:
-        model = MambaDecoderForCausalLM.from_pretrained(
-            args.decoder,
-            low_cpu_mem_usage=args.low_cpu_mem_usage,
-            trust_remote_code=args.trust_remote_code,
-            use_mambapy=True,
-        )
+        model = MambaCacheOptimizer(model_name = args.decoder)
     elif args.resume_from_checkpoint:
         checkpoint_path = os.path.join(args.output_dir, 'step_'+ args.resume_from_checkpoint)
-        model = MambaDecoderForCausalLM.from_pretrained(
-            checkpoint_path,
-            low_cpu_mem_usage=args.low_cpu_mem_usage,
-            trust_remote_code=args.trust_remote_code,
-            use_mambapy=True,
-        )
+        print("Loading from checkpoint not implemented!")
         state_path = os.path.join(checkpoint_path, 'training_state.bin')
         checkpoint = torch.load(state_path)
-    logger.info(model.config.to_dict())
+    #logger.info(model.config.to_dict())
     logger.info(model)
     model.train()
     model.cuda()
+    #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+    def check_for_nans(tensor):
+        if torch.isnan(tensor).any():
+            print(tensor)
+    #Load Dataset
+    def format_instance(examples):
+        prompt = (
+            f"Question: {examples['goal']}\n"
+            f"Option 0: {examples['sol1']}\n"
+            f"Option 1: {examples['sol2']}\n"
+            f"Answer: {examples['label']}"
+        )
+        return prompt
 
-    encoder = AutoModelForCausalLM.from_pretrained(
-        args.encoder,
-        low_cpu_mem_usage=args.low_cpu_mem_usage,
-        trust_remote_code=args.trust_remote_code,
-    )
-    encoder.eval()
-    encoder.cuda()
-
-    # Load Dataset
-    raw_dataset = ed.read_dataset(args.train_file)
-    tokenized_dataset = ed.tokenize_dataset(raw_dataset, tokenizer)
-    chunked_dataset = ed.chunk_dataset(tokenized_dataset, args.chunk_size)
-    batched_chunks = ed.batch_chunks(
-        chunked_dataset, args.batch_size
-    )  # batched_chunks[batch_number]['input_ids'][instance_number]
-
-    # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
-    # on a small vocab and want a smaller embedding size, remove this test.
-    embedding_size = model.get_input_embeddings().weight.shape[0]
-    if len(tokenizer) > embedding_size:
-        model.resize_token_embeddings(len(tokenizer))
+    def tokenize_dataset(examples):
+        inputs = format_instance(examples)
+        tokenized_inputs = tokenizer(inputs, padding='max_length', max_length= 20, truncation = True, return_tensors="pt")
+        output_dict={'input_ids': tokenized_inputs['input_ids'][0], 'attention_mask': tokenized_inputs['attention_mask'][0]}
+        return output_dict
+    
+    def custom_collator(batch):
+        # Extract 'input_ids' and 'attention_mask' and stack them into tensors
+        input_ids = torch.stack([torch.tensor(item['input_ids']) for item in batch])
+        attention_mask = torch.stack([torch.tensor(item['attention_mask']) for item in batch])        
+        # Extract the labels and convert to tensor
+        labels = torch.tensor([item['label'] for item in batch])    
+    # Return the batch as a dictionary of tensors
+        return {
+        'input_ids': input_ids,
+        'attention_mask': attention_mask,
+        'labels': labels
+    }
+    dataset = load_dataset("ybisk/piqa")
+    tokenized_dataset = dataset['train'].map(tokenize_dataset)
+    train_loader = DataLoader(tokenized_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=custom_collator)
 
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
@@ -411,7 +419,7 @@ def main():
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(
-        len(batched_chunks) / args.gradient_accumulation_steps
+        len(tokenized_dataset) / args.gradient_accumulation_steps
     )
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
@@ -439,27 +447,24 @@ def main():
     with tqdm(total=args.max_train_steps, desc="Training Progress") as pbar:
         pbar.update(completed_steps)
         for epoch in range(0, args.num_train_epochs):
-            for step, batch in enumerate(batched_chunks):
+            for step, batch in enumerate(train_loader):
                 if step > start_step:
-                    batch = {k: v.cuda() for k, v in batch.items()}
+                    #batch = {k: v.cuda() for k, v in batch.items()}
                     logger.info("Step: " + str(completed_steps))
-                    logger.info("Encode")
-                    with torch.no_grad():
-                        cache_params = ed.get_cache_params(batch['input_ids'], encoder)
-                    logger.info(batch['input_ids'].device)
-                    logger.info(cache_params)
+                    #logger.info(batch['input_ids'].device)
+                    #logger.info(cache_params)
 
                     logger.info("Forward")
-                    input_ids = F.pad(batch['input_ids'], (1, 1), value=tokenizer.eos_token_id)
-                    logger.info(batch['input_ids'].device)
+                    input_ids = batch["input_ids"].to('cuda')
+                    #attention_masks= batch["attention_mask"].to('cuda')
+                    #logger.info(batch['input_ids'].device)
                     outputs = model(
                         input_ids=input_ids,
-                        encoder_cache_params=cache_params,
-                        return_dict=True,
                         labels=input_ids,
+                        batch_size=args.batch_size,
                     )
                     loss = outputs.loss
-
+                    check_for_nans(outputs.logits)
                     logger.info("Loss: " + str(loss.item()))
                     logger.info("Memory: " + str(torch.cuda.memory_allocated()) + "\n")
 

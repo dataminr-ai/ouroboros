@@ -81,7 +81,7 @@ def move_cache(cache_params, device):
 def get_cache_params(batch, model):
     outputs = model(batch, output_hidden_states=True, use_cache=True, return_dict=True)
     hidden_states = outputs.cache_params
-    hidden_states.conv_states.zero_()
+    #hidden_states.conv_states.zero_()
     return hidden_states
 
 
