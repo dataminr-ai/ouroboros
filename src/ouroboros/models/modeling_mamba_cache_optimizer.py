@@ -43,33 +43,31 @@ class TrainableMambaCache(nn.Module):
                     dtype=dtype,
                 ))
 
-class MambaCacheOptimizer(nn.Module):
+class MambaTaskToCache(nn.Module):
     def __init__(self, 
                  model_name: str,
-                 prompt_cache: Optional[MambaCache] = None
+                 prompt_cache: Optional[MambaCache] = None,
+                 batch_size: int = 1
                  ):
-        super(MambaCacheOptimizer, self).__init__()
+        super(MambaTaskToCache, self).__init__()
 
         self.decoder = MambaDecoderForCausalLM.from_pretrained(model_name, use_mambapy=True)
-        self.trainable_cache = TrainableMambaCache(config = self.decoder.config, prompt_cache=prompt_cache)
-        
-        # Freeze the decoder weights
-        for param in self.decoder.parameters():
-            param.requires_grad = False
+        self.trainable_cache = TrainableMambaCache(config = self.decoder.config, prompt_cache=prompt_cache, batch_size=batch_size)
             
     def forward(self, input_ids, labels, batch_size=1):
         
-        stacked_conv_states = self.trainable_cache.conv_states.repeat(1, batch_size, 1, 1)
-        stacked_ssm_states = self.trainable_cache.ssm_states.repeat(1, batch_size, 1, 1)
-        stacked_cache = MambaCache(config = self.decoder.config, max_batch_size=batch_size)
-        stacked_cache.conv_states = stacked_conv_states
-        stacked_cache.ssm_states = stacked_ssm_states
-
+        #stacked_conv_states = self.trainable_cache.conv_states.data.clone().repeat(1, batch_size, 1, 1)
+        #stacked_ssm_states = self.trainable_cache.ssm_states.data.clone().repeat(1, batch_size, 1, 1)
+        #stacked_cache = MambaCache(config = self.decoder.config, max_batch_size=batch_size)
+        #stacked_cache.conv_states = stacked_conv_states
+        #stacked_cache.ssm_states = stacked_ssm_states
+        
         decoder_outputs = self.decoder(
                         input_ids=input_ids,
-                        encoder_cache_params=stacked_cache,
-                        return_dict=True,
-                        labels=labels
+                        #encoder_cache_params=stacked_cache,
+                        encoder_cache_params=self.trainable_cache,
+                        labels=labels,
+                        #encoder_cache_params=encoder_cache_params,
         )
         
         return decoder_outputs
