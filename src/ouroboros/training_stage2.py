@@ -28,7 +28,7 @@ import math
 import os
 
 import torch
-import torch.nn.functional as F
+import transformers
 from transformers import (
     MODEL_MAPPING,
     AutoModelForCausalLM,
@@ -36,30 +36,27 @@ from transformers import (
     SchedulerType,
     get_scheduler,
 )
+from transformers.cache_utils import MambaCache
 from transformers.models.mamba.modeling_mamba import is_fast_path_available
 from transformers.utils.versions import require_version
 from tqdm import tqdm
 
-import ouroboros.encode_dataset as ed
-from ouroboros.models import MambaDecoderForCausalLM, MambaDecoderConfig
-from ouroboros.models.modeling_mamba_cache_optimizer import MambaTaskToCache
+from ouroboros.models import MambaDecoderForCausalLM, MambaDecoderConfig, TrainableMambaCache
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 
-logger = logging.getLogger(__name__)
-logging.getLogger("py4j").setLevel(logging.DEBUG)
-file_handler = logging.FileHandler('output.log')
-logger.addHandler(file_handler)
+
 require_version(
     "datasets>=2.14.0",
     "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt",
 )
-
 AutoModelForCausalLM.register(MambaDecoderConfig, MambaDecoderForCausalLM)
+
+logger = logging.getLogger(__name__)
+logging.getLogger("py4j").setLevel(logging.DEBUG)
 
 MODEL_CONFIG_CLASSES = list(MODEL_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
-torch.autograd.set_detect_anomaly(True)
 
 
 def parse_args():
@@ -314,131 +311,99 @@ def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
     torch.save(checkpoint, checkpoint_path)
     logging.info(f"Checkpoint saved at epoch {epoch}, step {step}")
 
+
 def main():
     args = parse_args()
 
-    # log_file = os.path.join(args.output_dir, "output.log")
-    # logging.basicConfig(
-    #     level=logging.DEBUG,
-    #     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    #     # handlers=[logging.FileHandler(log_file, "w"), logging.StreamHandler()],
-    # )
+    logging.basicConfig(level=logging.INFO)
 
     if is_fast_path_available:
         logger.info('Fast path is available.')
     else:
         logger.info('Fast path is not available. Enabling will greatly speed up encoding.')
 
+    device = "cpu:0"
+    if torch.cuda.is_available():
+        device = "cuda:0"
+
     tokenizer = AutoTokenizer.from_pretrained(
         args.decoder,
         use_fast=not args.use_slow_tokenizer,
         trust_remote_code=args.trust_remote_code,
     )
-    '''
-    encoder = AutoModelForCausalLM.from_pretrained(
-        args.encoder,
-        low_cpu_mem_usage=args.low_cpu_mem_usage,
-        trust_remote_code=args.trust_remote_code,
-    )
-    encoder.eval()
-    encoder.cuda()
-    '''
 
-    #prompt = 'Fill in the blank:'
-    #tokenized_prompt = tokenizer(prompt, return_tensors="pt")['input_ids'].to('cuda')
-    #cache_params = ed.get_cache_params(tokenized_prompt, encoder)
-
-    if not args.resume_from_checkpoint:
-        model = MambaTaskToCache(model_name = args.decoder, batch_size=args.batch_size)
-        #model = MambaDecoderForCausalLM.from_pretrained(args.decoder, use_mambapy=True)
-    elif args.resume_from_checkpoint:
-        checkpoint_path = os.path.join(args.output_dir, 'step_'+ args.resume_from_checkpoint)
-        print("Loading from checkpoint not implemented!")
-        state_path = os.path.join(checkpoint_path, 'training_state.bin')
-        checkpoint = torch.load(state_path)
-    #logger.info(model.config.to_dict())
-    logger.info(model)
+    model = MambaDecoderForCausalLM.from_pretrained(args.decoder, use_mambapy=True)
+    model.to(device)
     model.train()
-    model.cuda()
-    #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-    def check_for_nans(tensor):
-        if torch.isnan(tensor).any():
-            print(tensor)
+
     #Load Dataset
     def format_instance(examples):
         prompt = (
             f"Question: {examples['goal']}\n"
             f"Option 0: {examples['sol1']}\n"
             f"Option 1: {examples['sol2']}\n"
-            f"Answer: {examples['label']}"
+            f"Answer: "
         )
-        return prompt
+        return {"inputs": prompt, "label_str": str(examples["label"])}
 
-    def tokenize_dataset(examples):
-        inputs = format_instance(examples)
-        tokenized_inputs = tokenizer(inputs, padding='max_length', max_length= 200, truncation = True, return_tensors="pt")
-        #tokenized_inputs = tokenizer(inputs, return_tensors="pt")
-        output_dict={'input_ids': tokenized_inputs['input_ids'][0]
-                     #, 'attention_mask': tokenized_inputs['attention_mask'][0]
-                     }
-        return output_dict
-    
-    def custom_collator(batch):
-        # Extract 'input_ids' and 'attention_mask' and stack them into tensors
-        input_ids = torch.stack([torch.tensor(item['input_ids']) for item in batch])
-        #attention_mask = torch.stack([torch.tensor(item['attention_mask']) for item in batch])        
-        # Extract the labels and convert to tensor
-        #labels = torch.tensor([item['label'] for item in batch])    
-    # Return the batch as a dictionary of tensors
-        return {
-        'input_ids': input_ids,
-        #'attention_mask': attention_mask,
-        #
-        # 'labels': labels
-    }
+    def tokenize_example(example):
+        tokenized_inputs = tokenizer(
+            example["inputs"],
+            return_attention_mask=False,
+        )
+        tokenized_label = tokenizer(
+            example["label_str"],
+            return_attention_mask=False,
+        )
+        input_ids = tokenized_inputs["input_ids"] + tokenized_label["input_ids"]
+        labels = [-100] * len(tokenized_inputs["input_ids"]) + tokenized_label["input_ids"]
+        return {"input_ids": input_ids, "labels": labels}
+
     dataset = load_dataset("ybisk/piqa")
-    tokenized_dataset = dataset['train'].map(tokenize_dataset)
-    
-    train_loader = DataLoader(tokenized_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=custom_collator)
+    dataset = dataset.map(format_instance)
+    dataset = dataset.map(tokenize_example, remove_columns=dataset["train"].column_names)
 
-    # Optimizer
-    # Split weights in two groups, one with weight decay and the other not.
-    '''
-    no_decay = ["bias", "layer_norm.weight"]
-    optimizer_grouped_parameters = [
-        {
-            "params": [
-                p
-                for n, p in model.named_parameters()
-                if not any(nd in n for nd in no_decay)
-            ],
-            "weight_decay": args.weight_decay,
-        },
-        {
-            "params": [
-                p
-                for n, p in model.named_parameters()
-                if any(nd in n for nd in no_decay)
-            ],
-            "weight_decay": 0.0,
-        },
-    ]
-    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
-'''
-    params_to_optimize = [{'params': p for n, p in model.trainable_cache.named_parameters()}]
-    print(params_to_optimize)
-    #params_to_optimize = [{'params': [p for n, p in model.named_parameters()]}]
+    def collate_fn(x):
+        # NOTE(rlogan): This is slow but correct
+        # TODO: Make the max size configurable instead of 128
+        max_seq_len = min(max(len(x_["input_ids"]) for x_ in x), 128)
+        batch_size = len(x)
+
+        input_ids = torch.zeros((batch_size, max_seq_len), dtype=torch.int64)
+        for i, x_ in enumerate(x):
+            input_ids[i, :len(x_["input_ids"])] = torch.tensor(x_["input_ids"])[:128]
+        labels = torch.full((batch_size, max_seq_len),fill_value=-100, dtype=torch.int64)
+        for i, x_ in enumerate(x):
+            labels[i, :len(x_["labels"])] = torch.tensor(x_["labels"])[:128]
+        return {
+            "input_ids": input_ids,
+            "labels": labels,
+        }
+
+    train_loader = DataLoader(
+        dataset["train"],
+        batch_size=args.batch_size,
+        shuffle=True,
+        collate_fn=collate_fn
+    )
+
+    # Initialize cache
+    encoder_cache_params = TrainableMambaCache(
+        config=model.config,
+        batch_size=args.batch_size,
+        device=device,
+        dtype=model.dtype
+    )
+
+    params_to_optimize = [{'params': encoder_cache_params.parameters()}]
     optimizer = torch.optim.AdamW(params_to_optimize, lr=args.learning_rate)
 
-    #initial_params = {name: param.clone() for name, param in model.trainable_cache.named_parameters()}
     # Scheduler and math around the number of training steps.
-    overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(
-        len(tokenized_dataset) / args.gradient_accumulation_steps /args.batch_size
+        len(dataset["train"]) / args.gradient_accumulation_steps / args.batch_size
     )
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-        overrode_max_train_steps = True
 
     lr_scheduler = get_scheduler(
         name=args.lr_scheduler_type,
@@ -451,83 +416,35 @@ def main():
     if checkpointing_steps is not None and checkpointing_steps.isdigit():
         checkpointing_steps = int(checkpointing_steps)
 
-    # Load from checkpoint if available
-    if not args.resume_from_checkpoint:
-        completed_steps, start_step = 0, 0
-    elif args.resume_from_checkpoint:
-        completed_steps, start_step = int(args.resume_from_checkpoint), int(args.resume_from_checkpoint)
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        lr_scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-    '''
-    #Random cache for testing
-    random_conv = torch.randn(
-                    24,
-                    1,
-                    1536,
-                    4,
-                    device='cuda')
-    random_ssm = torch.randn(
-                    24,
-                    1,
-                    1536,
-                    16,
-                    device='cuda')
-    random_conv = random_conv.repeat(1, args.batch_size, 1, 1)
-    random_ssm = random_ssm.repeat(1, args.batch_size, 1, 1)
-    '''
+    # TODO(rlogan): Add back checkpointing
+    completed_steps, start_step = 0, 0
 
     with tqdm(total=args.max_train_steps, desc="Training Progress") as pbar:
         pbar.update(completed_steps)
         for epoch in range(0, args.num_train_epochs):
             for step, batch in enumerate(train_loader):
                 if step > start_step:
-                    input_ids = batch["input_ids"].to('cuda')
-                    if input_ids.shape[0] == args.batch_size:
-                    #batch = {k: v.cuda() for k, v in batch.items()}
-                        logger.info("Step: " + str(completed_steps))
-                        #logger.info(batch['input_ids'].device)
-                        #logger.info(cache_params)
+                    batch = {k: v.to(device) for k, v in batch.items()}
 
-                        logger.info("Forward")
-                        #logger.info(batch['input_ids'].device
+                    if batch["input_ids"].shape[0] == args.batch_size:
+                        logger.info("Step: " + str(completed_steps))
+
                         outputs = model(
-                            input_ids=input_ids,
-                            labels=input_ids,
-                            #encoder_cache_params=cache_params,
-                            batch_size=args.batch_size,
+                            **batch,
+                            encoder_cache_params=encoder_cache_params,
                         )
+
                         loss = outputs.loss
-                        check_for_nans(outputs.logits)
                         logger.info("Loss: " + str(loss.item()))
                         logger.info("Memory: " + str(torch.cuda.memory_allocated()) + "\n")
-                        print(loss.item())
-                        logger.info("Backprop")
                         loss.backward()
+
                         optimizer.step()
                         lr_scheduler.step()
                         optimizer.zero_grad()
 
-                        print([{'params': p for n, p in model.trainable_cache.named_parameters()}])
-
                         completed_steps += 1
                         pbar.update(1)
-                        if completed_steps % checkpointing_steps == 0:
-                            output_dir = f"step_{completed_steps}"
-                            if args.output_dir is not None:
-                                output_dir = os.path.join(args.output_dir, output_dir)
-                            logging.info(
-                                "Saving Checkpoint at Step"
-                                + str(completed_steps)
-                                + " in directory "
-                                + str(output_dir)
-                            )
-                            # model.save_pretrained(output_dir)
-                            os.makedirs(output_dir, exist_ok=True)
-                            save_checkpoint(
-                                model, optimizer, lr_scheduler, epoch, step, output_dir
-                            )
-                        if completed_steps >= args.max_train_steps:
-                            break
 
     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
     #model.save_pretrained(output_dir)

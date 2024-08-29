@@ -35,7 +35,7 @@ from transformers.utils import (
 )
 
 from ouroboros.models.configuration_mamba_decoder import MambaDecoderConfig
-import torch.nn.functional as F
+
 
 logger = logging.getLogger(__name__)
 
@@ -139,13 +139,11 @@ class MambaDecoderMixer(nn.Module):
         elif encoder_cache_params is not None:
             # NOTE(rlogan): We blend logic  here, the ssm state is used, the hidden states aren't
             ssm_state = encoder_cache_params.ssm_states[self.layer_idx].clone()
-            ssm_state = ssm_state.to(hidden_states.device)
             # NOTE (tthossai): Conv States
-            conv_state = encoder_cache_params.conv_states[self.layer_idx].clone()                   # [batch, intermediate_size, conv_kernel_size]
+            conv_state = encoder_cache_params.conv_states[self.layer_idx].clone()                   # [batch, intermediate_size, conv_kernel_size - 1]
             hidden_states = torch.cat((conv_state, hidden_states), dim=-1)
             offset = conv_state.size(-1)
             hidden_states = self.act(self.conv1d(hidden_states)[..., offset:offset+seq_len])     # [batch, intermediate_size, seq_len]
-            #hidden_states = self.act(self.conv1d(hidden_states)[..., :seq_len])         # [batch, intermediate_size, seq_len]
         else:
             ssm_state = torch.zeros(
                 (batch_size, self.intermediate_size, self.ssm_state_size),
