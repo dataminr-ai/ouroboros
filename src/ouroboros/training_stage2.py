@@ -44,7 +44,8 @@ from tqdm import tqdm
 from ouroboros.models import MambaDecoderForCausalLM, MambaDecoderConfig, TrainableMambaCache
 from datasets import load_dataset
 from torch.utils.data import DataLoader
-
+from transformers.models.mamba import MambaConfig
+import ouroboros.encode_dataset as ed
 
 require_version(
     "datasets>=2.14.0",
@@ -295,11 +296,11 @@ def parse_args():
             raise ValueError("Need an `output_dir` to create a repo when `--push_to_hub` is passed.")
     """
     return args
-
+#torch.set_printoptions(threshold=float('inf'))
 
 def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
-    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-    #model.save_pretrained(checkpoint_path)
+    os.makedirs(checkpoint_path, exist_ok=True)
+    #print("Made directory")    #model.save_pretrained(checkpoint_path)
     checkpoint_path = os.path.join(checkpoint_path, "training_state.bin")
     checkpoint = {
         "epoch": epoch,
@@ -358,6 +359,36 @@ def main():
         input_ids = tokenized_inputs["input_ids"] + tokenized_label["input_ids"]
         labels = [-100] * len(tokenized_inputs["input_ids"]) + tokenized_label["input_ids"]
         return {"input_ids": input_ids, "labels": labels}
+    
+    def reconstruct(model, tokenizer, cache_params):
+        input_ids = torch.full(
+            (cache_params.conv_states.size(1), 1), tokenizer.bos_token_id, device=cache_params.conv_states.device
+        )
+        cache_position = torch.tensor([3], device=input_ids.device)
+        generated = []
+        eos_token_id = tokenizer.eos_token_id  # EOS token
+        finished = torch.zeros(input_ids.size(0), dtype=torch.bool, device=input_ids.device)  # Track finished sequences
+        while not finished.all():  # Continue until all sequences have an EOS token
+            with torch.no_grad():
+                outputs = model(
+                    input_ids=input_ids,
+                    cache_params=cache_params,
+                    cache_position=cache_position,
+                    use_cache=True,
+                    output_dict=True,
+                )        
+            input_ids = outputs.logits.argmax(dim=-1)
+            cache_params = outputs.cache_params
+            cache_position = cache_position[-1:] + 1
+            generated.append(input_ids.to("cpu"))        
+            # Check for EOS token in each sequence
+            finished |= (input_ids == eos_token_id).any(dim=-1)
+        generated = torch.cat(generated, dim=-1).to("cpu")
+        #recons = tokenizer.batch_decode(generated, skip_special_tokens=True)    
+        # Cleanup
+        del input_ids, cache_params, cache_position, outputs
+        torch.cuda.empty_cache()
+        return generated
 
     dataset = load_dataset("ybisk/piqa")
     dataset = dataset.map(format_instance)
@@ -366,15 +397,15 @@ def main():
     def collate_fn(x):
         # NOTE(rlogan): This is slow but correct
         # TODO: Make the max size configurable instead of 128
-        max_seq_len = min(max(len(x_["input_ids"]) for x_ in x), 128)
+        max_seq_len = min(max(len(x_["input_ids"]) for x_ in x), 200)
         batch_size = len(x)
 
         input_ids = torch.zeros((batch_size, max_seq_len), dtype=torch.int64)
         for i, x_ in enumerate(x):
-            input_ids[i, :len(x_["input_ids"])] = torch.tensor(x_["input_ids"])[:128]
+            input_ids[i, :len(x_["input_ids"])] = torch.tensor(x_["input_ids"])[:max_seq_len]
         labels = torch.full((batch_size, max_seq_len),fill_value=-100, dtype=torch.int64)
         for i, x_ in enumerate(x):
-            labels[i, :len(x_["labels"])] = torch.tensor(x_["labels"])[:128]
+            labels[i, :len(x_["labels"])] = torch.tensor(x_["labels"])[:max_seq_len]
         return {
             "input_ids": input_ids,
             "labels": labels,
@@ -386,7 +417,7 @@ def main():
         shuffle=True,
         collate_fn=collate_fn
     )
-
+    
     # Initialize cache
     encoder_cache_params = TrainableMambaCache(
         config=model.config,
@@ -400,7 +431,7 @@ def main():
 
     # Scheduler and math around the number of training steps.
     num_update_steps_per_epoch = math.ceil(
-        len(dataset["train"]) / args.gradient_accumulation_steps / args.batch_size
+        len(dataset) / args.gradient_accumulation_steps / args.batch_size
     )
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
@@ -419,6 +450,17 @@ def main():
     # TODO(rlogan): Add back checkpointing
     completed_steps, start_step = 0, 0
 
+    # For reconstruction 
+    model_name='state-spaces/mamba-130m-hf'
+    config = MambaConfig(model_name)
+    #encoder = AutoModelForCausalLM.from_pretrained(model_name)
+    #encoder.eval()
+    #encoder.cuda()
+
+    decoder = MambaDecoderForCausalLM.from_pretrained('/../../../extra/ucinlp1/tthossai/bookish-couscous/models_130m/constant/conv/mixed/step_19842', torch_dtype = model.dtype)
+    decoder.eval()
+    decoder.cuda()
+
     with tqdm(total=args.max_train_steps, desc="Training Progress") as pbar:
         pbar.update(completed_steps)
         for epoch in range(0, args.num_train_epochs):
@@ -428,13 +470,35 @@ def main():
 
                     if batch["input_ids"].shape[0] == args.batch_size:
                         logger.info("Step: " + str(completed_steps))
-
+                        #print(batch['input_ids'])
+                        #print(batch['labels'])
                         outputs = model(
                             **batch,
                             encoder_cache_params=encoder_cache_params,
                         )
 
-                        loss = outputs.loss
+                        #loss = outputs.loss
+                        
+                        loss1 = outputs.loss
+
+                        # Loss 2
+                        #get learned hidden state... 
+                        learned_cache_params = MambaCache(config = config, max_batch_size =1, dtype = model.dtype)
+                        learned_cache_params.conv_states = encoder_cache_params.learned_conv_state
+                        learned_cache_params.ssm_states = encoder_cache_params.learned_ssm_state
+
+                        #reconstructed state encoder(decoder(learned_cache_params))
+                        recons = reconstruct(decoder, tokenizer, learned_cache_params).to('cuda')
+                        with torch.no_grad():
+                            recon_cache_params = ed.get_cache_params(recons, model)
+                        #define distance function
+                        ssm_dist = torch.norm(learned_cache_params.ssm_states - recon_cache_params.ssm_states)
+                        conv_dist = torch.norm(learned_cache_params.conv_states - recon_cache_params.conv_states)
+
+                        #Loss
+                        loss = loss1 + 0.05*(ssm_dist + conv_dist)
+                        
+                        #del learned_cache_params, recons, ssm_dist, conv_dist
                         logger.info("Loss: " + str(loss.item()))
                         logger.info("Memory: " + str(torch.cuda.memory_allocated()) + "\n")
                         loss.backward()
@@ -446,10 +510,24 @@ def main():
                         completed_steps += 1
                         pbar.update(1)
 
+                        if completed_steps % checkpointing_steps == 0:
+                            output_dir = f"step_{completed_steps}"
+                            if args.output_dir is not None:
+                                output_dir = os.path.join(args.output_dir, output_dir)
+                            logging.info(
+                                "Saving Checkpoint at Step"
+                                + str(completed_steps)
+                                + " in directory "
+                                + str(output_dir)
+                            )
+                            # model.save_pretrained(output_dir)
+                            save_checkpoint(
+                                encoder_cache_params, optimizer, lr_scheduler, epoch, step, output_dir
+                            )
     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
     #model.save_pretrained(output_dir)
     save_checkpoint(
-                    model, optimizer, lr_scheduler, epoch, step, output_dir
+                    encoder_cache_params, optimizer, lr_scheduler, epoch, step, output_dir
                     )
     logging.info(
         "Saving final checkpoint for epoch "
