@@ -29,6 +29,7 @@ import os
 
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 from transformers import (
     MODEL_MAPPING,
     AutoModelForCausalLM,
@@ -38,11 +39,9 @@ from transformers import (
 )
 from transformers.models.mamba.modeling_mamba import is_fast_path_available
 from transformers.utils.versions import require_version
-from tqdm import tqdm
 
 import ouroboros.encode_dataset as ed
-from ouroboros.models import MambaDecoderForCausalLM, MambaDecoderConfig
-
+from ouroboros.models import MambaDecoderConfig, MambaDecoderForCausalLM
 
 logger = logging.getLogger(__name__)
 logging.getLogger("py4j").setLevel(logging.ERROR)
@@ -222,24 +221,6 @@ def parse_args():
         help="Overwrite the cached training and evaluation sets",
     )
     parser.add_argument(
-        "--no_keep_linebreaks",
-        action="store_true",
-        help="Do not keep line breaks when using TXT files.",
-    )
-    parser.add_argument(
-        "--push_to_hub",
-        action="store_true",
-        help="Whether or not to push the model to the Hub.",
-    )
-    parser.add_argument(
-        "--hub_model_id",
-        type=str,
-        help="The name of the repository to keep in sync with the local `output_dir`.",
-    )
-    parser.add_argument(
-        "--hub_token", type=str, help="The token to use to push to the Model Hub."
-    )
-    parser.add_argument(
         "--trust_remote_code",
         action="store_true",
         help=(
@@ -263,7 +244,14 @@ def parse_args():
     parser.add_argument(
         "--chunk_size",
         type=int,
-        help="Sequence Length for training",
+        default = None,
+        help="Sequence Length for fixed sequence length training",
+    )
+    parser.add_argument(
+        "--mixed_chunk",
+        type=bool,
+        default = False,
+        help="Whether to use mixed chunk sizes",
     )
     parser.add_argument(
         "--batch_size",
@@ -305,7 +293,6 @@ def parse_args():
             raise ValueError("Need an `output_dir` to create a repo when `--push_to_hub` is passed.")
     """
     return args
-
 
 def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
     os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
@@ -374,10 +361,17 @@ def main():
     # Load Dataset
     raw_dataset = ed.read_dataset(args.train_file)
     tokenized_dataset = ed.tokenize_dataset(raw_dataset, tokenizer)
-    chunked_dataset = ed.chunk_dataset(tokenized_dataset, args.chunk_size)
-    batched_chunks = ed.batch_chunks(
+
+    if not args.mixed_chunk:
+        chunked_dataset = ed.chunk_dataset(tokenized_dataset, args.chunk_size)
+        batched_chunks = ed.batch_chunks(
+            chunked_dataset, args.batch_size
+        )  # batched_chunks[batch_number]['input_ids'][instance_number]
+    else:
+        chunked_dataset = ed.chunk_dataset_varied(tokenized_dataset)
+        batched_chunks = ed.batch_chunks_varied(
         chunked_dataset, args.batch_size
-    )  # batched_chunks[batch_number]['input_ids'][instance_number]
+    )
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.

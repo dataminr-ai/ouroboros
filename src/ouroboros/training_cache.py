@@ -23,12 +23,14 @@ https://huggingface.co/models?filter=text-generation
 # You can also adapt this script on your own causal language modeling task. Pointers for this are left as comments.
 
 import argparse
+import json
 import logging
 import math
 import os
 
 import torch
-import transformers
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 from transformers import (
     MODEL_MAPPING,
     AutoModelForCausalLM,
@@ -37,19 +39,17 @@ from transformers import (
     get_scheduler,
 )
 from transformers.cache_utils import MambaCache
+from transformers.models.mamba import MambaConfig
 from transformers.models.mamba.modeling_mamba import is_fast_path_available
 from transformers.utils.versions import require_version
-from tqdm import tqdm
 
+import ouroboros.encode_dataset as ed
+from ouroboros.decode_cache import reconstruct
 from ouroboros.models import (
-    MambaDecoderForCausalLM,
     MambaDecoderConfig,
+    MambaDecoderForCausalLM,
     TrainableMambaCache,
 )
-from torch.utils.data import DataLoader
-from transformers.models.mamba import MambaConfig
-import jsonlines
-import ouroboros.encode_dataset as ed
 
 require_version(
     "datasets>=2.14.0",
@@ -79,7 +79,7 @@ def parse_args():
         type=int,
         default=200,
         help="Maximum sequence length for training data",
-        required=False
+        required=False,
     )
     parser.add_argument(
         "--decoder",
@@ -222,6 +222,18 @@ def parse_args():
         help="Batch size",
     )
     parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda",
+        help="Device to use for training",
+    )
+    parser.add_argument(
+        "--starting_prompt",
+        type=str,
+        default=None,
+        help="Prompt to initiate the cache",
+    )
+    parser.add_argument(
         "--with_tracking",
         action="store_true",
         help="Whether to enable experiment trackers for logging.",
@@ -247,18 +259,7 @@ def parse_args():
 
     args = parser.parse_args()
 
-    # Sanity checks
-    """
-    if args.dataset_name is None and args.train_file is None and args.validation_file is None:
-        raise ValueError("Need either a dataset name or a training/validation file.")
-    if args.push_to_hub:
-        if args.output_dir is None:
-            raise ValueError("Need an `output_dir` to create a repo when `--push_to_hub` is passed.")
-    """
     return args
-
-
-# torch.set_printoptions(threshold=float('inf'))
 
 
 def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
@@ -278,20 +279,10 @@ def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
 
 def load_dataset(file_path):
     dataset = []
-    with jsonlines.open(file_path, "r") as reader:
-        for line in reader:
-            dataset.append(line)
+    with open(file_path, "r") as file:
+        for line in file:
+            dataset.append(json.loads(line))
     return dataset
-
-
-def format_instance(examples):
-    prompt = (
-        f"Question: {examples['goal']}\n"
-        f"Option 0: {examples['sol1']}\n"
-        f"Option 1: {examples['sol2']}\n"
-        f"Answer: "
-    )
-    return {"inputs": prompt, "label_str": str(examples["label"])}
 
 
 def tokenize_example(example, tokenizer):
@@ -308,45 +299,10 @@ def tokenize_example(example, tokenizer):
     return {"input_ids": input_ids, "labels": labels}
 
 
-def reconstruct(model, tokenizer, cache_params):
-    input_ids = torch.full(
-        (cache_params.conv_states.size(1), 1),
-        tokenizer.bos_token_id,
-        device=cache_params.conv_states.device,
-    )
-    cache_position = torch.tensor([3], device=input_ids.device)
-    generated = []
-    eos_token_id = tokenizer.eos_token_id  # EOS token
-    finished = torch.zeros(
-        input_ids.size(0), dtype=torch.bool, device=input_ids.device
-    )  # Track finished sequences
-    while not finished.all():  # Continue until all sequences have an EOS token
-        with torch.no_grad():
-            outputs = model(
-                input_ids=input_ids,
-                cache_params=cache_params,
-                cache_position=cache_position,
-                use_cache=True,
-                output_dict=True,
-            )
-        input_ids = outputs.logits.argmax(dim=-1)
-        cache_params = outputs.cache_params
-        cache_position = cache_position[-1:] + 1
-        generated.append(input_ids.to("cpu"))
-        # Check for EOS token in each sequence
-        finished |= (input_ids == eos_token_id).any(dim=-1)
-    generated = torch.cat(generated, dim=-1).to("cpu")
-    # recons = tokenizer.batch_decode(generated, skip_special_tokens=True)
-    # Cleanup
-    del input_ids, cache_params, cache_position, outputs
-    torch.cuda.empty_cache()
-    return generated
-
-
-def collate_fn(x, max=200):
+def collate_fn(x, max_len=200):
     # NOTE(rlogan): This is slow but correct
     # TODO: Make the max size configurable instead of 128
-    max_seq_len = min(max(len(x_["input_ids"]) for x_ in x), max)
+    max_seq_len = min(max(len(x_["input_ids"]) for x_ in x), max_len)
     batch_size = len(x)
 
     input_ids = torch.zeros((batch_size, max_seq_len), dtype=torch.int64)
@@ -375,33 +331,31 @@ def main():
             "Fast path is not available. Enabling will greatly speed up encoding."
         )
 
-    device = "cpu:0"
-    if torch.cuda.is_available():
-        device = "cuda:0"
-
     tokenizer = AutoTokenizer.from_pretrained(
         args.decoder,
-        use_fast=not args.use_slow_tokenizer,
         trust_remote_code=args.trust_remote_code,
     )
 
     model = MambaDecoderForCausalLM.from_pretrained(args.decoder, use_mambapy=True)
-    model.to(device)
+    model.to(args.device)
     model.train()
 
     # Load Dataset
     dataset = load_dataset(args.train_file)
-
-    dataset = dataset.map(lambda example: tokenize_example(example, tokenizer))
+    dataset = [tokenize_example(example, tokenizer) for example in dataset]
+    # dataset = dataset.map(lambda example: tokenize_example(example, tokenizer))
 
     train_loader = DataLoader(
-        dataset, batch_size=args.batch_size, shuffle=True, collate_fn=lambda batch: collate_fn(batch, args.max_seq_len)
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        collate_fn=lambda batch: collate_fn(batch, args.max_seq_len),
     )
 
     # Initialize cache
     if args.starting_prompt is not None:
         prompt = ["Pick the best option that answers the question.\n"]
-        token_prompt = tokenizer(prompt, return_tensors="pt").to(device)
+        token_prompt = tokenizer(prompt, return_tensors="pt").to(args.device)
         with torch.no_grad():
             encoded_prompt = ed.get_cache_params(token_prompt["input_ids"], model)
         learned_conv_state = encoded_prompt.conv_states
@@ -415,7 +369,7 @@ def main():
         batch_size=args.batch_size,
         learned_conv_state=learned_conv_state,
         learned_ssm_state=learned_ssm_state,
-        device=device,
+        device=args.device,
         dtype=model.dtype,
     )
 
@@ -447,23 +401,21 @@ def main():
     if args.reg:
         config = MambaConfig(args.decoder)
 
-        recon = MambaDecoderForCausalLM.from_pretrained(
+        decoder = MambaDecoderForCausalLM.from_pretrained(
             args.reconstructor, torch_dtype=model.dtype
         )
-        recon.eval()
-        recon.cuda()
+        decoder.eval()
+        decoder.to(args.device)
 
     with tqdm(total=args.max_train_steps, desc="Training Progress") as pbar:
         pbar.update(completed_steps)
         for epoch in range(0, args.num_train_epochs):
             for step, batch in enumerate(train_loader):
                 if step > start_step:
-                    batch = {k: v.to(device) for k, v in batch.items()}
+                    batch = {k: v.to(args.device) for k, v in batch.items()}
 
                     if batch["input_ids"].shape[0] == args.batch_size:
                         logger.info("Step: " + str(completed_steps))
-                        # print(batch['input_ids'])
-                        # print(batch['labels'])
                         outputs = model(
                             **batch,
                             encoder_cache_params=encoder_cache_params,
@@ -484,28 +436,14 @@ def main():
                                 encoder_cache_params.learned_ssm_state.detach().clone()
                             )
 
-                            zeros_to_append = torch.zeros(
-                                learned_cache_params.conv_states.size(0),
-                                learned_cache_params.conv_states.size(1),
-                                learned_cache_params.conv_states.size(2),
-                                1,
-                                dtype=model.dtype,
-                                device="cuda",
-                            )
-
-                            learned_cache_params.conv_states = torch.cat(
-                                (learned_cache_params.conv_states, zeros_to_append),
-                                dim=-1,
-                            )
-                            del zeros_to_append
-                            torch.cuda.empty_cache()
-
                             # reconstructed state encoder(decoder(learned_cache_params))
-                            recons = reconstruct(
-                                recon, tokenizer, learned_cache_params
-                            ).to("cuda")
+                            decoded_cache = reconstruct(
+                                decoder, tokenizer, learned_cache_params
+                            ).to(args.device)
                             with torch.no_grad():
-                                recon_cache_params = ed.get_cache_params(recons, model)
+                                recon_cache_params = ed.get_cache_params(
+                                    decoded_cache, model
+                                )
 
                             # define distance function
                             ssm_dist = torch.norm(
@@ -518,9 +456,8 @@ def main():
                             )
 
                             # Loss
-                            loss = (
-                                outputs.loss
-                                + args.reg_strength * (ssm_dist + conv_dist) / 2
+                            loss = outputs.loss + args.reg_strength * (
+                                ssm_dist + conv_dist
                             )
 
                         logger.info("Loss: " + str(loss.item()))
