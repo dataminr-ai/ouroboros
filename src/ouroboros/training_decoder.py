@@ -259,6 +259,12 @@ def parse_args():
         help="Batch size",
     )
     parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda",
+        help="Device to use for training",
+    )
+    parser.add_argument(
         "--with_tracking",
         action="store_true",
         help="Whether to enable experiment trackers for logging.",
@@ -348,7 +354,7 @@ def main():
     logger.info(model.config.to_dict())
     logger.info(model)
     model.train()
-    model.cuda()
+    model.to(args.device)
 
     encoder = AutoModelForCausalLM.from_pretrained(
         args.encoder,
@@ -356,7 +362,7 @@ def main():
         trust_remote_code=args.trust_remote_code,
     )
     encoder.eval()
-    encoder.cuda()
+    encoder.to(args.device)
 
     # Load Dataset
     raw_dataset = ed.read_dataset(args.train_file)
@@ -435,7 +441,7 @@ def main():
         for epoch in range(0, args.num_train_epochs):
             for step, batch in enumerate(batched_chunks):
                 if step > start_step:
-                    batch = {k: v.cuda() for k, v in batch.items()}
+                    batch = {k: v.to(args.device) for k, v in batch.items()}
                     logger.info("Step: " + str(completed_steps))
                     logger.info("Encode")
                     with torch.no_grad():
