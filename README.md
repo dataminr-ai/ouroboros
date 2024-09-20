@@ -89,12 +89,13 @@ python src/ouroboros/training_cache.py  \
                                 --learning_rate 1e-5\
                                 --batch_size 10 \
                                 --lr_scheduler_type constant \
+                                --starting_prompt "Pick the best option that answers the question.\n"
 ```
 ### Decode Cache
 ```
 python src/ouroboros/decode_cache.py  \
                                 --decoder models/reconstructor/mixed \
-                                --learned_cache models/piqa \
+                                --learned_cache models/piqa/step_100/training_state.bin \
                                 --tokenizer state-spaces/mamba-130m-hf
 ```
 
