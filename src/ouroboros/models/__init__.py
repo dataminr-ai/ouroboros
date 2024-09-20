@@ -1,2 +1,3 @@
 from ouroboros.models.configuration_mamba_decoder import MambaDecoderConfig
 from ouroboros.models.modeling_mamba_decoder import MambaDecoderForCausalLM
+from ouroboros.models.modeling_mamba_cache import TrainableMambaCache

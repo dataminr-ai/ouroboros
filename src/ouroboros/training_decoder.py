@@ -29,6 +29,7 @@ import os
 
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 from transformers import (
     MODEL_MAPPING,
     AutoModelForCausalLM,
@@ -38,11 +39,9 @@ from transformers import (
 )
 from transformers.models.mamba.modeling_mamba import is_fast_path_available
 from transformers.utils.versions import require_version
-from tqdm import tqdm
 
 import ouroboros.encode_dataset as ed
-from ouroboros.models import MambaDecoderForCausalLM, MambaDecoderConfig
-
+from ouroboros.models import MambaDecoderConfig, MambaDecoderForCausalLM
 
 logger = logging.getLogger(__name__)
 logging.getLogger("py4j").setLevel(logging.ERROR)
@@ -222,24 +221,6 @@ def parse_args():
         help="Overwrite the cached training and evaluation sets",
     )
     parser.add_argument(
-        "--no_keep_linebreaks",
-        action="store_true",
-        help="Do not keep line breaks when using TXT files.",
-    )
-    parser.add_argument(
-        "--push_to_hub",
-        action="store_true",
-        help="Whether or not to push the model to the Hub.",
-    )
-    parser.add_argument(
-        "--hub_model_id",
-        type=str,
-        help="The name of the repository to keep in sync with the local `output_dir`.",
-    )
-    parser.add_argument(
-        "--hub_token", type=str, help="The token to use to push to the Model Hub."
-    )
-    parser.add_argument(
         "--trust_remote_code",
         action="store_true",
         help=(
@@ -263,12 +244,25 @@ def parse_args():
     parser.add_argument(
         "--chunk_size",
         type=int,
-        help="Sequence Length for training",
+        default = None,
+        help="Sequence Length for fixed sequence length training",
+    )
+    parser.add_argument(
+        "--mixed_chunk",
+        type=bool,
+        default = False,
+        help="Whether to use mixed chunk sizes",
     )
     parser.add_argument(
         "--batch_size",
         type=int,
         help="Batch size",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda",
+        help="Device to use for training",
     )
     parser.add_argument(
         "--with_tracking",
@@ -306,7 +300,6 @@ def parse_args():
     """
     return args
 
-
 def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
     os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
     model.save_pretrained(checkpoint_path)
@@ -340,16 +333,28 @@ def main():
         use_fast=not args.use_slow_tokenizer,
         trust_remote_code=args.trust_remote_code,
     )
-    model = MambaDecoderForCausalLM.from_pretrained(
-        args.decoder,
-        low_cpu_mem_usage=args.low_cpu_mem_usage,
-        trust_remote_code=args.trust_remote_code,
-        use_mambapy=True,
-    )
+
+    if not args.resume_from_checkpoint:
+        model = MambaDecoderForCausalLM.from_pretrained(
+            args.decoder,
+            low_cpu_mem_usage=args.low_cpu_mem_usage,
+            trust_remote_code=args.trust_remote_code,
+            use_mambapy=True,
+        )
+    elif args.resume_from_checkpoint:
+        checkpoint_path = os.path.join(args.output_dir, 'step_'+ args.resume_from_checkpoint)
+        model = MambaDecoderForCausalLM.from_pretrained(
+            checkpoint_path,
+            low_cpu_mem_usage=args.low_cpu_mem_usage,
+            trust_remote_code=args.trust_remote_code,
+            use_mambapy=True,
+        )
+        state_path = os.path.join(checkpoint_path, 'training_state.bin')
+        checkpoint = torch.load(state_path)
     logger.info(model.config.to_dict())
     logger.info(model)
     model.train()
-    model.cuda()
+    model.to(args.device)
 
     encoder = AutoModelForCausalLM.from_pretrained(
         args.encoder,
@@ -357,15 +362,22 @@ def main():
         trust_remote_code=args.trust_remote_code,
     )
     encoder.eval()
-    encoder.cuda()
+    encoder.to(args.device)
 
     # Load Dataset
     raw_dataset = ed.read_dataset(args.train_file)
     tokenized_dataset = ed.tokenize_dataset(raw_dataset, tokenizer)
-    chunked_dataset = ed.chunk_dataset(tokenized_dataset, args.chunk_size)
-    batched_chunks = ed.batch_chunks(
+
+    if not args.mixed_chunk:
+        chunked_dataset = ed.chunk_dataset(tokenized_dataset, args.chunk_size)
+        batched_chunks = ed.batch_chunks(
+            chunked_dataset, args.batch_size
+        )  # batched_chunks[batch_number]['input_ids'][instance_number]
+    else:
+        chunked_dataset = ed.chunk_dataset_varied(tokenized_dataset)
+        batched_chunks = ed.batch_chunks_varied(
         chunked_dataset, args.batch_size
-    )  # batched_chunks[batch_number]['input_ids'][instance_number]
+    )
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
@@ -419,60 +431,68 @@ def main():
     # Load from checkpoint if available
     if not args.resume_from_checkpoint:
         completed_steps, start_step = 0, 0
+    elif args.resume_from_checkpoint:
+        completed_steps, start_step = int(args.resume_from_checkpoint), int(args.resume_from_checkpoint)
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        lr_scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
     with tqdm(total=args.max_train_steps, desc="Training Progress") as pbar:
         pbar.update(completed_steps)
         for epoch in range(0, args.num_train_epochs):
             for step, batch in enumerate(batched_chunks):
-                batch = {k: v.cuda() for k, v in batch.items()}
-                logger.info("Step: " + str(completed_steps))
-                logger.info("Encode")
-                with torch.no_grad():
-                    cache_params = ed.get_cache_params(batch['input_ids'], encoder)
-                logger.info(batch['input_ids'].device)
-                logger.info(cache_params)
+                if step > start_step:
+                    batch = {k: v.to(args.device) for k, v in batch.items()}
+                    logger.info("Step: " + str(completed_steps))
+                    logger.info("Encode")
+                    with torch.no_grad():
+                        cache_params = ed.get_cache_params(batch['input_ids'], encoder)
+                    logger.info(batch['input_ids'].device)
+                    logger.info(cache_params)
 
-                logger.info("Forward")
-                input_ids = F.pad(batch['input_ids'], (1, 1), value=tokenizer.eos_token_id)
-                logger.info(batch['input_ids'].device)
-                outputs = model(
-                    input_ids=input_ids,
-                    encoder_cache_params=cache_params,
-                    return_dict=True,
-                    labels=input_ids,
-                )
-                loss = outputs.loss
-
-                logger.info("Loss: " + str(loss.item()))
-                logger.info("Memory: " + str(torch.cuda.memory_allocated()) + "\n")
-
-                logger.info("Backprop")
-                loss.backward()
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-
-                completed_steps += 1
-                pbar.update(1)
-                if completed_steps % checkpointing_steps == 0:
-                    output_dir = f"step_{completed_steps}"
-                    if args.output_dir is not None:
-                        output_dir = os.path.join(args.output_dir, output_dir)
-                    logging.info(
-                        "Saving Checkpoint at Step"
-                        + str(completed_steps)
-                        + " in directory "
-                        + str(output_dir)
+                    logger.info("Forward")
+                    input_ids = F.pad(batch['input_ids'], (1, 1), value=tokenizer.eos_token_id)
+                    logger.info(batch['input_ids'].device)
+                    outputs = model(
+                        input_ids=input_ids,
+                        encoder_cache_params=cache_params,
+                        return_dict=True,
+                        labels=input_ids,
                     )
-                    # model.save_pretrained(output_dir)
-                    save_checkpoint(
-                        model, optimizer, lr_scheduler, epoch, step, output_dir
-                    )
-                if completed_steps >= args.max_train_steps:
-                    break
+                    loss = outputs.loss
+
+                    logger.info("Loss: " + str(loss.item()))
+                    logger.info("Memory: " + str(torch.cuda.memory_allocated()) + "\n")
+
+                    logger.info("Backprop")
+                    loss.backward()
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
+
+                    completed_steps += 1
+                    pbar.update(1)
+                    if completed_steps % checkpointing_steps == 0:
+                        output_dir = f"step_{completed_steps}"
+                        if args.output_dir is not None:
+                            output_dir = os.path.join(args.output_dir, output_dir)
+                        logging.info(
+                            "Saving Checkpoint at Step"
+                            + str(completed_steps)
+                            + " in directory "
+                            + str(output_dir)
+                        )
+                        # model.save_pretrained(output_dir)
+                        save_checkpoint(
+                            model, optimizer, lr_scheduler, epoch, step, output_dir
+                        )
+                    if completed_steps >= args.max_train_steps:
+                        break
 
     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
-    model.save_pretrained(output_dir)
+    #model.save_pretrained(output_dir)
+    save_checkpoint(
+                    model, optimizer, lr_scheduler, epoch, step, output_dir
+                    )
     logging.info(
         "Saving final checkpoint for epoch "
         + str(epoch)

@@ -1,4 +1,4 @@
-# Bookish Couscous
+# Ouroboros
 
 ### Installation
 
@@ -14,12 +14,90 @@ To install mamba dependencies:
 pip install mamba-ssm
 ```
 
-### Train
+### Train Decoder
+Fixed sequence length:
+```
+python src/ouroboros/training.py  \
+                                    --encoder state-spaces/mamba-130m-hf \
+                                    --decoder state-spaces/mamba-130m-hf \
+                                    --train_file train_subset_10k.jsonl \
+                                    --output_dir models/reconstructor/fixed/4 \
+                                    --checkpointing_steps 1000 \
+                                    --num_train_epochs 1 \
+                                    --learning_rate 1e-5\
+                                    --chunk_size 4 \
+                                    --batch_size 200 \
+                                    --lr_scheduler_type constant
+```
 
-```python src/ouroboros/training.py --decoder <model_id> --encoder <model_id> --train_file <path_jsonl> --output_dir <directory> --checkpointing_steps <int> --num_train_epochs 1 --learning_rate <lr> --chunk_size <int> --batch_size <int>```
+Mixed sequence length:
+```
+python src/ouroboros/training.py  \
+                                    --encoder state-spaces/mamba-130m-hf \
+                                    --decoder state-spaces/mamba-130m-hf \
+                                    --train_file train_subset_10k.jsonl \
+                                    --output_dir models/reconstructor/mixed \
+                                    --checkpointing_steps 1000 \
+                                    --num_train_epochs 1 \
+                                    --learning_rate 1e-5\
+                                    --batch_size 2 \
+                                    --lr_scheduler_type constant \
+                                    --mixed_chunk True
+```
 
-### Evaluate
+### Evaluate Decoder
 ```python evaluate.py --base_model <model_id>  --config <path_json> --eval_file <path_jsonl> --chunk_size <int> --batch_size <int> --output_dir <directory> --ckpt_path <path_to_checkpoint>```
+
+### Train Cache
+
+```
+python src/ouroboros/training_cache.py  \
+                                --decoder state-spaces/mamba-130m-hf \
+                                --train_file piqa_formatted.jsonl \
+                                --output_dir models/piqa \
+                                --checkpointing_steps 100 \
+                                --num_train_epochs 1 \
+                                --learning_rate 1e-5\
+                                --batch_size 10 \
+                                --lr_scheduler_type constant \
+```
+
+Use regularization:
+```
+python src/ouroboros/training_cache.py  \
+                                --decoder state-spaces/mamba-130m-hf \
+                                --train_file piqa_formatted.jsonl \
+                                --output_dir models/piqa \
+                                --checkpointing_steps 100 \
+                                --num_train_epochs 1 \
+                                --learning_rate 1e-5\
+                                --batch_size 10 \
+                                --lr_scheduler_type constant \
+                                --reg True \
+                                --reg_strength 0.005 \
+                                --reconstructor models/reconstructor/mixed
+```
+
+Initialize cache with a prompt:
+```
+python src/ouroboros/training_cache.py  \
+                                --decoder state-spaces/mamba-130m-hf \
+                                --train_file piqa_formatted.jsonl \
+                                --output_dir models/piqa \
+                                --checkpointing_steps 100 \
+                                --num_train_epochs 1 \
+                                --learning_rate 1e-5\
+                                --batch_size 10 \
+                                --lr_scheduler_type constant \
+                                --starting_prompt "Pick the best option that answers the question.\n"
+```
+### Decode Cache
+```
+python src/ouroboros/decode_cache.py  \
+                                --decoder models/reconstructor/mixed \
+                                --learned_cache models/piqa/step_100/training_state.bin \
+                                --tokenizer state-spaces/mamba-130m-hf
+```
 
 ### Developing using [VSCode Devcontainers](https://code.visualstudio.com/docs/devcontainers/containers)
 
