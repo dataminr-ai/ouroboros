@@ -17,7 +17,8 @@ AutoModelForCausalLM.register(MambaDecoderConfig, MambaDecoderForCausalLM)
 
 def reconstruct(model, tokenizer, cache_params, chunk_size):
     input_ids = torch.full((cache_params.conv_states.size(1), 1), tokenizer.bos_token_id, device=cache_params.conv_states.device)
-    cache_position = torch.arange(0, model.config.conv_kernel, device=input_ids.device)
+    #cache_position = torch.arange(0, model.config.conv_kernel, device=input_ids.device)
+    cache_position = torch.tensor([3], device=input_ids.device)
     generated = []
     for idx in range(chunk_size + 1):
         #print(idx)
