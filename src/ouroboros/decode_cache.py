@@ -60,6 +60,13 @@ def main():
         required=True,
         help="Path to the learned cache state_dict file",
     )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        required=True,
+        default=None,
+        help="Path to the learned cache state_dict file",
+    )
 
     parser.add_argument("--tokenizer", type=str, required=True, help="Tokenizer")
 
@@ -96,6 +103,11 @@ def main():
     recons_tokens = reconstruct(decoder, tokenizer, cache_params, args.max_seq_len)
     recons = tokenizer.batch_decode(recons_tokens, skip_special_tokens=True)
     print(recons)
+
+    if args.output_dir:
+        with open(f"{args.output_dir}/prompt.txt", "w") as f:
+            for recon in recons:
+                f.write(recon + "\n")
 
 
 if __name__ == "__main__":
