@@ -33,8 +33,6 @@ def tokenize_example(example, tokenizer):
         return_attention_mask=False,
     )
     input_ids = tokenized_inputs["input_ids"]
-    # labels = [-100] * len(tokenized_inputs["input_ids"]) + tokenized_label["input_ids"]
-    # input_ids = tokenized_inputs["input_ids"] + tokenized_label["input_ids"]
     labels = tokenized_label["input_ids"]
     return {"input_ids": input_ids, "labels": labels}
 
@@ -42,7 +40,6 @@ def tokenize_example(example, tokenizer):
 def collate_fn(x):
     # NOTE(rlogan): This is slow but correct
     # TODO: Make the max size configurable instead of 128
-    # max_seq_len = min(max(len(x_["input_ids"]) for x_ in x), 128)
     max_seq_len = max(len(x_["input_ids"]) for x_ in x)
     batch_size = len(x)
 
@@ -107,7 +104,6 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # model_name='state-spaces/mamba-130m-hf'
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     # Load dataset
     dataset = load_dataset(args.eval_file)
@@ -133,7 +129,6 @@ def main():
         batch_size=args.batch_size,
         shuffle=True,
         collate_fn=collate_fn,
-        # collate_fn=lambda batch: collate_fn(batch, args.max_seq_len),
     )
 
     # Model
@@ -160,9 +155,6 @@ def main():
         # Get the argmax over the restricted logits
         preds = mask.argmax(dim=-1)
 
-        # preds = next_token_logits.argmax(dim=-1)
-        # print(preds)
-        # print(batch["labels"])
         correct += (preds == batch["labels"][:, 0]).sum().item()
         total += len(batch["labels"])
 
