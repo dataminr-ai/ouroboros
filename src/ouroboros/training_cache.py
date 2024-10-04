@@ -41,7 +41,6 @@ from transformers import (
 from transformers.cache_utils import MambaCache
 from transformers.models.mamba import MambaConfig
 from transformers.models.mamba.modeling_mamba import is_fast_path_available
-from transformers.utils.versions import require_version
 
 import ouroboros.encode_dataset as ed
 from ouroboros.decode_cache import reconstruct
@@ -52,10 +51,6 @@ from ouroboros.models import (
 )
 
 
-require_version(
-    "datasets>=2.14.0",
-    "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt",
-)
 AutoModelForCausalLM.register(MambaDecoderConfig, MambaDecoderForCausalLM)
 
 logger = logging.getLogger(__name__)
