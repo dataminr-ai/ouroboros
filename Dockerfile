@@ -30,9 +30,8 @@ RUN pyenv install 3.10.13
 RUN pyenv global 3.10.13
 
 ## Setup env
-ADD requirements.txt /opt/
 RUN pip install build wheel torch==2.3.1
-RUN pip install -r /opt/requirements.txt
+RUN pip install -e ".[fast]"
 
 
 ENTRYPOINT ["/bin/bash"]
