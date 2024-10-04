@@ -15,6 +15,12 @@ Recommendation: If installing on a GPU machine, use the `fast` extra to install 
 pip install -e ".[fast]"
 ```
 
+If you are planning on contributing to the project, please install the dev dependencies and set up the pre-commit checks.
+```
+pip install -e ".[dev]"
+pre-commit install
+```
+
 
 ### Train Decoder
 Fixed sequence length:

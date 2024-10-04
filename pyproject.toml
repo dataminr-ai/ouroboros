@@ -29,6 +29,11 @@ fast = [
     "causal-conv1d",
     "mamba-ssm",
 ]
+dev = [
+    "pre-commit",
+    "pytest",
+    "ruff"
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
