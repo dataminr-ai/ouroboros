@@ -1,12 +1,7 @@
-import argparse
-import gc
 import json
-import os
-import pickle
 import random
 
 import torch
-from transformers import AutoConfig, AutoTokenizer, MambaForCausalLM
 
 
 def read_dataset(filename):
@@ -123,94 +118,3 @@ def get_cache_params(batch, model):
     outputs = model(batch, output_hidden_states=True, use_cache=True, return_dict=True)
     hidden_states = outputs.cache_params
     return hidden_states
-
-
-def main(
-    input_file,
-    model_id,
-    config_path,
-    chunk_size,
-    batch_size,
-    output_file,
-    checkpoints=None,
-):
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    config = AutoConfig.from_pretrained(config_path)
-    model = MambaForCausalLM.from_pretrained(model_id, config=config)
-    model.cuda()
-
-    raw_dataset = read_dataset(input_file)
-    tokenized_dataset = tokenize_dataset(raw_dataset, tokenizer)
-    chunked_dataset = chunk_dataset(tokenized_dataset, chunk_size)
-    batched_chunks = batch_chunks(
-        chunked_dataset, batch_size
-    )  # batched_chunks[batch_number]['input_ids'][instance_number]
-    print("Number of batches: ", len(batched_chunks))
-    encoded_dataset = batched_chunks.copy()
-
-    for idx, batch in enumerate(batched_chunks):
-        print(idx)
-        with torch.no_grad():
-            input_ids = batch["input_ids"].to("cuda")
-            hidden_states = get_cache_params(input_ids, model)
-            encoded_dataset[idx]["cache_params"] = hidden_states
-        del hidden_states, input_ids
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        completed_steps = idx + 1
-        if checkpoints and (idx + 1) % checkpoints == 0:
-            # Save encoded_dataset as pickle file
-            output_path = os.path.join(output_file, f"subset_{idx + 1}.pkl")
-            with open(output_path, "wb") as f:
-                pickle.dump(
-                    encoded_dataset[
-                        completed_steps - checkpoints : completed_steps - 1
-                    ],
-                    f,
-                )
-            encoded_dataset[completed_steps - checkpoints : completed_steps - 1] = [
-                None
-            ] * (checkpoints - 1)
-            print(f"Saved and cleared checkpoint {completed_steps}")
-
-    if not checkpoints:
-        # Save encoded_dataset as pickle file
-        with open(output_file, "wb") as f:
-            pickle.dump(encoded_dataset, f)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Process dataset and get hidden states."
-    )
-    parser.add_argument(
-        "--input_file", type=str, required=True, help="Input dataset filename (jsonl)"
-    )
-    parser.add_argument("--model_id", type=str, required=True, help="Model ID")
-    parser.add_argument("--config_path", type=str, required=True, help="Config.json")
-    parser.add_argument(
-        "--output_file", type=str, required=True, help="Output dataset filename (pkl)"
-    )
-    parser.add_argument(
-        "--chunk_size", type=int, required=True, help="Size of each chunk"
-    )
-
-    parser.add_argument(
-        "--checkpoints", type=int, help="Divide dataset into checkpoints if needed"
-    )
-
-    parser.add_argument(
-        "--batch_size", type=int, required=True, help="Size of each batch"
-    )
-    args = parser.parse_args()
-
-    main(
-        args.input_file,
-        args.model_id,
-        args.config_path,
-        args.chunk_size,
-        args.batch_size,
-        args.output_file,
-        args.checkpoints,
-    )
