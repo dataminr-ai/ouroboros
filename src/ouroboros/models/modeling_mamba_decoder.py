@@ -112,7 +112,7 @@ class MambaDecoderMixer(nn.Module):
         batch_size, seq_len, _ = input_states.shape
         dtype = input_states.dtype
         # 1. Gated MLP's linear projection
-        projected_states = self.in_proj(input_states).transpose(1, 2)                   # [batch, 2 * intermediate_size, seq_len]
+        projected_states = self.in_proj(input_states).transpose(1, 2)  # [batch, 2 * intermediate_size, seq_len]
         hidden_states, gate = projected_states.chunk(2, dim=1)
 
         # 2. Convolution sequence transformation
@@ -129,27 +129,27 @@ class MambaDecoderMixer(nn.Module):
                 )
 
                 cache_params.update_conv_state(self.layer_idx, conv_state, cache_position)
-                hidden_states = self.act(self.conv1d(hidden_states)[..., :seq_len])     # [batch, intermediate_size, seq_len]
+                hidden_states = self.act(self.conv1d(hidden_states)[..., :seq_len])  # [batch, intermediate_size, seq_len]
             else:
                 conv_state = cache_params.update_conv_state(self.layer_idx, hidden_states, cache_position)
                 hidden_states = torch.sum(conv_state * self.conv1d.weight[:, 0, :], dim=-1)
                 if self.use_conv_bias:
                     hidden_states += self.conv1d.bias
-                hidden_states = self.act(hidden_states).to(dtype).unsqueeze(-1)         # [batch, intermediate_size, 1] : decoding
+                hidden_states = self.act(hidden_states).to(dtype).unsqueeze(-1)  # [batch, intermediate_size, 1] : decoding
         elif encoder_cache_params is not None:
             # NOTE(rlogan): We blend logic  here, the ssm state is used, the hidden states aren't
             ssm_state = encoder_cache_params.ssm_states[self.layer_idx].clone()
             # NOTE (tthossai): Conv States
-            conv_state = encoder_cache_params.conv_states[self.layer_idx].clone()                   # [batch, intermediate_size, conv_kernel_size - 1]
+            conv_state = encoder_cache_params.conv_states[self.layer_idx].clone()  # [batch, intermediate_size, conv_kernel_size - 1]
             hidden_states = torch.cat((conv_state, hidden_states), dim=-1)
             offset = conv_state.size(-1)
-            hidden_states = self.act(self.conv1d(hidden_states)[..., offset:offset+seq_len])     # [batch, intermediate_size, seq_len]
+            hidden_states = self.act(self.conv1d(hidden_states)[..., offset:offset+seq_len])  # [batch, intermediate_size, seq_len]
         else:
             ssm_state = torch.zeros(
                 (batch_size, self.intermediate_size, self.ssm_state_size),
                 device=hidden_states.device, dtype=dtype
             )
-            hidden_states = self.act(self.conv1d(hidden_states)[..., :seq_len])         # [batch, intermediate_size, seq_len]
+            hidden_states = self.act(self.conv1d(hidden_states)[..., :seq_len])  # [batch, intermediate_size, seq_len]
 
         # 3. State Space Model sequence transformation
         # 3.a. Selection:  [batch, seq_len, self.time_step_rank + self.ssm_state_size * 2]
@@ -157,13 +157,13 @@ class MambaDecoderMixer(nn.Module):
         time_step, B, C = torch.split(
             ssm_parameters, [self.time_step_rank, self.ssm_state_size, self.ssm_state_size], dim=-1
         )
-        discrete_time_step = self.dt_proj(time_step)                                    # [batch, seq_len, intermediate_size]
+        discrete_time_step = self.dt_proj(time_step)  # [batch, seq_len, intermediate_size]
         discrete_time_step = nn.functional.softplus(discrete_time_step).transpose(1, 2) # [batch, intermediate_size, seq_len]
 
         # 3.b. Discretization: B and C to [batch, seq_len, intermediate_size, ssm_state_size] (SRAM)
-        A = -torch.exp(self.A_log.float())                                              # [intermediate_size, ssm_state_size]
+        A = -torch.exp(self.A_log.float())  # [intermediate_size, ssm_state_size]
         discrete_A = torch.exp(A[None, :, None, :] * discrete_time_step[:, :, :, None]) # [batch, intermediate_size, seq_len, ssm_state_size]
-        discrete_B = discrete_time_step[:, :, :, None] * B[:, None, :, :].float()       # [batch, intermediate_size, seq_len, ssm_state_size]
+        discrete_B = discrete_time_step[:, :, :, None] * B[:, None, :, :].float()  # [batch, intermediate_size, seq_len, ssm_state_size]
         deltaB_u = discrete_B * hidden_states[:, :, :, None].float()
 
         # NOTE(rlogan): Here is the trick. To condition on the encoder ssm state in pscan we prepend it to deltaB_u
@@ -188,10 +188,10 @@ class MambaDecoderMixer(nn.Module):
             scan_outputs = []
             offset = 0 if encoder_cache_params is None else 1
             for i in range(seq_len):
-                ssm_state = discrete_A[:, :, i + offset, :] * ssm_state + deltaB_u[:, :, i + offset, :]      # [batch, intermediade_size, ssm_state]
+                ssm_state = discrete_A[:, :, i + offset, :] * ssm_state + deltaB_u[:, :, i + offset, :]  # [batch, intermediade_size, ssm_state]
                 scan_output = torch.matmul(ssm_state.to(dtype), C[:, i, :].unsqueeze(-1))  # [batch, intermediade_size, 1]
                 scan_outputs.append(scan_output[:, :, 0])
-            scan_output = torch.stack(scan_outputs, dim=-1)                                # [batch, intermediate_size, seq_len]
+            scan_output = torch.stack(scan_outputs, dim=-1)  # [batch, intermediate_size, seq_len]
             scan_output = scan_output + (hidden_states * self.D[None, :, None])
             scan_output = (scan_output * self.act(gate))
 
@@ -279,7 +279,7 @@ class MambaDecoderPreTrainedModel(PreTrainedModel):
                 * (math.log(self.config.time_step_max) - math.log(self.config.time_step_min))
                 + math.log(self.config.time_step_min)
             ).clamp(min=self.config.time_step_floor)
-            # # Inverse of softplus: https://github.com/pytorch/pytorch/issues/72759
+            # Inverse of softplus: https://github.com/pytorch/pytorch/issues/72759
             inv_dt = dt + torch.log(-torch.expm1(-dt))
             with torch.no_grad():
                 module.dt_proj.bias.copy_(inv_dt)
