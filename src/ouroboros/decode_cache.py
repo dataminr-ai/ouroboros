@@ -23,7 +23,6 @@ def reconstruct(model, tokenizer, cache_params, max_seq_len=1000):
         input_ids.size(0), dtype=torch.bool, device=input_ids.device
     )  # Track finished sequences
     end = False
-    # while not finished.all():  # Continue until all sequences have an EOS token
     while not end:
         with torch.no_grad():
             outputs = model(
@@ -99,7 +98,6 @@ def main():
     cache_params.ssm_states = cache.learned_ssm_state
 
     # Add to conv cache
-
     recons_tokens = reconstruct(decoder, tokenizer, cache_params, args.max_seq_len)
     recons = tokenizer.batch_decode(recons_tokens, skip_special_tokens=True)
     print(recons)

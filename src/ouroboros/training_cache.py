@@ -260,7 +260,6 @@ def parse_args():
 
 def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
     os.makedirs(checkpoint_path, exist_ok=True)
-    # print("Made directory")    #model.save_pretrained(checkpoint_path)
     checkpoint_path = os.path.join(checkpoint_path, "training_state.bin")
     checkpoint = {
         "epoch": epoch,
@@ -339,7 +338,6 @@ def main():
     # Load Dataset
     dataset = load_dataset(args.train_file)
     dataset = [tokenize_example(example, tokenizer) for example in dataset]
-    # dataset = dataset.map(lambda example: tokenize_example(example, tokenizer))
 
     train_loader = DataLoader(
         dataset,
@@ -479,7 +477,6 @@ def main():
                                 + " in directory "
                                 + str(output_dir)
                             )
-                            # model.save_pretrained(output_dir)
                             save_checkpoint(
                                 encoder_cache_params,
                                 optimizer,
@@ -489,7 +486,6 @@ def main():
                                 output_dir,
                             )
     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
-    # model.save_pretrained(output_dir)
     save_checkpoint(
         encoder_cache_params, optimizer, lr_scheduler, epoch, step, output_dir
     )

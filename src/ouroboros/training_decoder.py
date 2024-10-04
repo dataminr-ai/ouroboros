@@ -285,15 +285,8 @@ def parse_args():
 
     args = parser.parse_args()
 
-    # Sanity checks
-    """
-    if args.dataset_name is None and args.train_file is None and args.validation_file is None:
-        raise ValueError("Need either a dataset name or a training/validation file.")
-    if args.push_to_hub:
-        if args.output_dir is None:
-            raise ValueError("Need an `output_dir` to create a repo when `--push_to_hub` is passed.")
-    """
     return args
+
 
 def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
     os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
@@ -308,15 +301,9 @@ def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
     torch.save(checkpoint, checkpoint_path)
     logging.info(f"Checkpoint saved at epoch {epoch}, step {step}")
 
+
 def main():
     args = parse_args()
-
-    # log_file = os.path.join(args.output_dir, "output.log")
-    # logging.basicConfig(
-    #     level=logging.DEBUG,
-    #     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    #     # handlers=[logging.FileHandler(log_file, "w"), logging.StreamHandler()],
-    # )
 
     if is_fast_path_available:
         logger.info('Fast path is available.')
@@ -367,7 +354,7 @@ def main():
         chunked_dataset = ed.chunk_dataset(tokenized_dataset, args.chunk_size)
         batched_chunks = ed.batch_chunks(
             chunked_dataset, args.batch_size
-        )  # batched_chunks[batch_number]['input_ids'][instance_number]
+        )
     else:
         chunked_dataset = ed.chunk_dataset_varied(tokenized_dataset)
         batched_chunks = ed.batch_chunks_varied(
@@ -474,7 +461,6 @@ def main():
                             + " in directory "
                             + str(output_dir)
                         )
-                        # model.save_pretrained(output_dir)
                         save_checkpoint(
                             model, optimizer, lr_scheduler, epoch, step, output_dir
                         )
@@ -482,10 +468,7 @@ def main():
                         break
 
     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
-    #model.save_pretrained(output_dir)
-    save_checkpoint(
-                    model, optimizer, lr_scheduler, epoch, step, output_dir
-                    )
+    save_checkpoint(model, optimizer, lr_scheduler, epoch, step, output_dir)
     logging.info(
         "Saving final checkpoint for epoch "
         + str(epoch)

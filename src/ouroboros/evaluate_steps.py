@@ -5,8 +5,7 @@ from ouroboros.evaluate import main as eval
 
 
 def main(base_model, eval_file, chunk_size, batch_size, model_dir):
-    
-    #base_decoder=os.path.join(model_dir, 'decoder')
+
     trained_decoder=os.path.join(model_dir, str(chunk_size))
     output_dir=os.path.join(trained_decoder, 'evaluate')
 
@@ -20,6 +19,7 @@ def main(base_model, eval_file, chunk_size, batch_size, model_dir):
             print(f"Evaluating {dir}")
             step_path = os.path.join(trained_decoder, dir)
             eval(base_model, eval_file, chunk_size, batch_size, output_dir, step_path)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(

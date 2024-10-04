@@ -9,7 +9,6 @@ import datasets
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, MambaForCausalLM
 
-#from evaluate import load
 import ouroboros.encode_dataset as ed
 from ouroboros.models import MambaDecoderConfig, MambaDecoderForCausalLM
 
@@ -18,11 +17,9 @@ AutoModelForCausalLM.register(MambaDecoderConfig, MambaDecoderForCausalLM)
 
 def reconstruct(model, tokenizer, cache_params, chunk_size):
     input_ids = torch.full((cache_params.conv_states.size(1), 1), tokenizer.bos_token_id, device=cache_params.conv_states.device)
-    #cache_position = torch.arange(0, model.config.conv_kernel, device=input_ids.device)
     cache_position = torch.tensor([3], device=input_ids.device)
     generated = []
     for idx in range(chunk_size + 1):
-        #print(idx)
         with torch.no_grad():
             outputs = model(
                 input_ids=input_ids,
@@ -36,7 +33,6 @@ def reconstruct(model, tokenizer, cache_params, chunk_size):
         cache_position = cache_position[-1:] + 1
         generated.append(input_ids.to("cpu"))
     generated = torch.cat(generated, dim=-1).to("cpu")
-    #print("Generated Ids: ", generated)
     recons = tokenizer.batch_decode(generated, skip_special_tokens=True)
     del input_ids, cache_params, cache_position, outputs, generated
     torch.cuda.empty_cache()
@@ -80,7 +76,7 @@ def main(
     chunked_dataset = ed.chunk_dataset(tokenized_dataset, chunk_size)
     batched_chunks = ed.batch_chunks(
         chunked_dataset, batch_size
-    )  # batched_chunks[batch_number]['input_ids'][instance_number]
+    )
 
     # Reconstruct text using decoder
     reconstructed = []
@@ -89,7 +85,6 @@ def main(
         with torch.no_grad():
             input_ids = batch["input_ids"].to("cuda")
             cache_params = ed.get_cache_params(input_ids, encoder)
-        #print(f'Input ids: {input_ids}')
         recons = reconstruct(model, tokenizer, cache_params, chunk_size)
         reconstructed.append(recons)
         del batch, recons, cache_params
@@ -108,9 +103,6 @@ def main(
         comparison['reconstructed'].extend(reconstructed_text)
         metric.add(predictions=[reconstructed_text], references=[reference_text])
 
-    #output_file = os.path.join(output_dir, str(midx) + ".pkl")
-    #with open(output_file, "wb") as f:
-     #   pickle.dump(comparison, f)
     comparison_json = json.dumps(comparison, indent=4)
     output_file = os.path.join(output_dir, str(midx) + "_decoded.json")
     with open(output_file, "w") as file:
