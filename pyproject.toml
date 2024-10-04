@@ -92,12 +92,9 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.ruff]
-# Allow lines to be as long as 120.
-line-length = 120
-
 [tool.ruff.lint]
 select = ["E", "F", "I"]
+ignore = ["E501"]
 
 [tool.ruff.lint.isort]
 lines-after-imports = 2

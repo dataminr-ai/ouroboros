@@ -410,13 +410,11 @@ def main():
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
 
     # Scheduler and math around the number of training steps.
-    overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(
         len(batched_chunks) / args.gradient_accumulation_steps
     )
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-        overrode_max_train_steps = True
 
     lr_scheduler = get_scheduler(
         name=args.lr_scheduler_type,
