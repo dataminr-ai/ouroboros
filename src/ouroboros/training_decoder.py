@@ -59,39 +59,23 @@ def parse_args():
         description="Finetune a transformers model on a causal language modeling task"
     )
     parser.add_argument(
-        "--dataset_name",
-        type=str,
-        default=None,
-        help="The name of the dataset to use (via the datasets library).",
-    )
-    parser.add_argument(
-        "--dataset_config_name",
-        type=str,
-        default=None,
-        help="The configuration name of the dataset to use (via the datasets library).",
-    )
-    parser.add_argument(
         "--train_file",
         type=str,
         default=None,
         help="A json file containing the training data",
     )
+    # TODO(rlogan): Use
     parser.add_argument(
         "--validation_file",
         type=str,
         default=None,
         help="A csv, txt or a json file containing the validation data.",
     )
+    # TODO(rlogan): Use
     parser.add_argument(
         "--validation_split_percentage",
         default=5,
         help="The percentage of the train set used as validation set in case there's no validation split",
-    )
-    parser.add_argument(
-        "--decoder",
-        type=str,
-        help="Path to pretrained model or model identifier from huggingface.co/models.",
-        required=False,
     )
     parser.add_argument(
         "--encoder",
@@ -100,28 +84,17 @@ def parse_args():
         required=False,
     )
     parser.add_argument(
-        "--encoder_config",
+        "--decoder",
         type=str,
-        default=None,
-        help="Pretrained config path for decoder",
-    )
-    parser.add_argument(
-        "--decoder_config",
-        type=str,
-        default=None,
-        help="Pretrained config path for decoder",
-    )
-    parser.add_argument(
-        "--tokenizer_name",
-        type=str,
-        default=None,
-        help="Pretrained tokenizer name or path if not the same as model_name",
+        help="Path to pretrained model or model identifier from huggingface.co/models.",
+        required=False,
     )
     parser.add_argument(
         "--use_slow_tokenizer",
         action="store_true",
         help="If passed, will use a slow tokenizer (not backed by the 🤗 Tokenizers library).",
     )
+    # TODO(rlogan): Use or lose
     parser.add_argument(
         "--per_device_train_batch_size",
         type=int,
@@ -184,32 +157,18 @@ def parse_args():
     parser.add_argument(
         "--output_dir", type=str, default=None, help="Where to store the final model."
     )
+    # TODO(rlogan): Use or lose
     parser.add_argument(
         "--seed", type=int, default=None, help="A seed for reproducible training."
     )
-    parser.add_argument(
-        "--model_type",
-        type=str,
-        default=None,
-        help="Model type to use if training from scratch.",
-        choices=MODEL_TYPES,
-    )
-    parser.add_argument(
-        "--block_size",
-        type=int,
-        default=None,
-        help=(
-            "Optional input sequence length after tokenization. The training dataset will be truncated in block of"
-            " this size for training. Default to the model max input length for single sentence inputs (take into"
-            " account special tokens)."
-        ),
-    )
+    # TODO(rlogan): Use with datasets when added back.
     parser.add_argument(
         "--preprocessing_num_workers",
         type=int,
         default=None,
         help="The number of processes to use for the preprocessing.",
     )
+    # TODO(rlogan): Use with datasets when added back.
     parser.add_argument(
         "--overwrite_cache",
         action="store_true",
@@ -259,6 +218,7 @@ def parse_args():
         default="cuda",
         help="Device to use for training",
     )
+    # TODO(rlogan): Add tracking
     parser.add_argument(
         "--with_tracking",
         action="store_true",
