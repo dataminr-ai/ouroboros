@@ -9,10 +9,12 @@ conda activate ouroboros
 pip install -e .
 ```
 
-To install mamba dependencies:
+Recommendation: If installing on a GPU machine, use the `fast` extra to install `mamba-ssm` and `causal-conv1d`.
+(Which can speed up parts of training/inference).
 ```
-pip install mamba-ssm
+pip install -e ".[fast]"
 ```
+
 
 ### Train Decoder
 Fixed sequence length:
