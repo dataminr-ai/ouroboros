@@ -1,17 +1,18 @@
-import datasets
-import logging
-import pickle
-from transformers import AutoConfig, MambaForCausalLM, AutoTokenizer, AutoModelForCausalLM
-import torch
-import os
+import argparse
 import gc
 import json
+import logging
+import os
 import re
-import argparse
-#from evaluate import load
 
+import datasets
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, MambaForCausalLM
+
+#from evaluate import load
 import ouroboros.encode_dataset as ed
-from ouroboros.models import MambaDecoderForCausalLM, MambaDecoderConfig
+from ouroboros.models import MambaDecoderConfig, MambaDecoderForCausalLM
+
 
 AutoModelForCausalLM.register(MambaDecoderConfig, MambaDecoderForCausalLM)
 

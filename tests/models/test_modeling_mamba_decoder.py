@@ -1,7 +1,6 @@
 import tempfile
 
 import torch
-from transformers.cache_utils import MambaCache
 from transformers.models.mamba import MambaConfig, MambaForCausalLM
 
 from ouroboros.models.configuration_mamba_decoder import MambaDecoderConfig

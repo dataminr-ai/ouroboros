@@ -1,7 +1,9 @@
 import argparse
 import json
 import os
+
 import matplotlib.pyplot as plt
+
 
 def main(model_dir, chunk_size):
     submodel_dir = f'{model_dir}/{chunk_size}'

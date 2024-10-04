@@ -1,12 +1,13 @@
 import argparse
-from transformers import AutoConfig, MambaForCausalLM, AutoTokenizer
-import torch
-import json
-import pickle
 import gc
+import json
 import os
+import pickle
 import random
-import torch.nn.functional as F
+
+import torch
+from transformers import AutoConfig, AutoTokenizer, MambaForCausalLM
+
 
 def read_dataset(filename):
     texts = []
