@@ -476,7 +476,7 @@ class MambaDecoderModel(MambaDecoderPreTrainedModel):
         if self.gradient_checkpointing and self.training and use_cache:
             use_cache = False
 
-        if use_cache:
+        if use_cache and encoder_cache_params is None:
             if cache_params is None:
                 cache_params = MambaCache(
                     self.config, inputs_embeds.size(0), device=inputs_embeds.device, dtype=inputs_embeds.dtype

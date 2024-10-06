@@ -71,6 +71,18 @@ def parse_args():
         help="Path to dataset file",
     )
     parser.add_argument(
+        "--validation_file",
+        type=str,
+        default=None,
+        help="Path to dataset file",
+    )
+    parser.add_argument(
+        "--validation_steps",
+        type=int,
+        default=10,
+        help="Number of steps between each validation run",
+    )
+    parser.add_argument(
         "--max_seq_len",
         type=int,
         default=200,
@@ -295,6 +307,25 @@ def collate_fn(x, max_len=200):
         "labels": labels,
     }
 
+def validate(model, encoder_cache_params, valid_loader, batch_size, device):
+    model.eval()
+    loss=0
+    total=0
+    steps=0
+    max_steps = len(valid_loader)
+    with torch.no_grad():
+        with tqdm(total=max_steps, desc="Validation Progress") as pbar:
+            pbar.update(steps)
+            for batch in valid_loader:
+                if batch["input_ids"].shape[0] == batch_size:
+                    batch = {k: v.to(device) for k, v in batch.items()}
+                    outputs = model(**batch, encoder_cache_params=encoder_cache_params,)
+                    batch_loss = outputs.loss
+                    loss += batch_loss.item()
+                    total += 1
+                    steps += 1
+        valid_loss = loss / total
+        return valid_loss
 
 def main():
     args = parse_args()
@@ -467,6 +498,14 @@ def main():
                                 step,
                                 output_dir,
                             )
+                        
+                        if args.validation_file and completed_steps % args.validation_steps == 0:
+                            print('Validating...')
+                            valid_loss = validate(
+                                model, encoder_cache_params, valid_loader, args.batch_size, args.device
+                            )
+                            logger.info("Validation Loss: " + str(valid_loss))
+                            model.train()
     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
     save_checkpoint(
         encoder_cache_params, optimizer, lr_scheduler, epoch, step, output_dir
