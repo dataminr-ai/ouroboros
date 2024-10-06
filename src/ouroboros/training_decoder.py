@@ -38,19 +38,14 @@ from transformers import (
     get_scheduler,
 )
 from transformers.models.mamba.modeling_mamba import is_fast_path_available
-from transformers.utils.versions import require_version
 
 import ouroboros.encode_dataset as ed
 from ouroboros.models import MambaDecoderConfig, MambaDecoderForCausalLM
 
+
 logger = logging.getLogger(__name__)
 logging.getLogger("py4j").setLevel(logging.ERROR)
 
-
-require_version(
-    "datasets>=2.14.0",
-    "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt",
-)
 
 AutoModelForCausalLM.register(MambaDecoderConfig, MambaDecoderForCausalLM)
 
@@ -64,39 +59,23 @@ def parse_args():
         description="Finetune a transformers model on a causal language modeling task"
     )
     parser.add_argument(
-        "--dataset_name",
-        type=str,
-        default=None,
-        help="The name of the dataset to use (via the datasets library).",
-    )
-    parser.add_argument(
-        "--dataset_config_name",
-        type=str,
-        default=None,
-        help="The configuration name of the dataset to use (via the datasets library).",
-    )
-    parser.add_argument(
         "--train_file",
         type=str,
         default=None,
         help="A json file containing the training data",
     )
+    # TODO(rlogan): Use
     parser.add_argument(
         "--validation_file",
         type=str,
         default=None,
         help="A csv, txt or a json file containing the validation data.",
     )
+    # TODO(rlogan): Use
     parser.add_argument(
         "--validation_split_percentage",
         default=5,
         help="The percentage of the train set used as validation set in case there's no validation split",
-    )
-    parser.add_argument(
-        "--decoder",
-        type=str,
-        help="Path to pretrained model or model identifier from huggingface.co/models.",
-        required=False,
     )
     parser.add_argument(
         "--encoder",
@@ -105,28 +84,17 @@ def parse_args():
         required=False,
     )
     parser.add_argument(
-        "--encoder_config",
+        "--decoder",
         type=str,
-        default=None,
-        help="Pretrained config path for decoder",
-    )
-    parser.add_argument(
-        "--decoder_config",
-        type=str,
-        default=None,
-        help="Pretrained config path for decoder",
-    )
-    parser.add_argument(
-        "--tokenizer_name",
-        type=str,
-        default=None,
-        help="Pretrained tokenizer name or path if not the same as model_name",
+        help="Path to pretrained model or model identifier from huggingface.co/models.",
+        required=False,
     )
     parser.add_argument(
         "--use_slow_tokenizer",
         action="store_true",
         help="If passed, will use a slow tokenizer (not backed by the 🤗 Tokenizers library).",
     )
+    # TODO(rlogan): Use or lose
     parser.add_argument(
         "--per_device_train_batch_size",
         type=int,
@@ -189,32 +157,18 @@ def parse_args():
     parser.add_argument(
         "--output_dir", type=str, default=None, help="Where to store the final model."
     )
+    # TODO(rlogan): Use or lose
     parser.add_argument(
         "--seed", type=int, default=None, help="A seed for reproducible training."
     )
-    parser.add_argument(
-        "--model_type",
-        type=str,
-        default=None,
-        help="Model type to use if training from scratch.",
-        choices=MODEL_TYPES,
-    )
-    parser.add_argument(
-        "--block_size",
-        type=int,
-        default=None,
-        help=(
-            "Optional input sequence length after tokenization. The training dataset will be truncated in block of"
-            " this size for training. Default to the model max input length for single sentence inputs (take into"
-            " account special tokens)."
-        ),
-    )
+    # TODO(rlogan): Use with datasets when added back.
     parser.add_argument(
         "--preprocessing_num_workers",
         type=int,
         default=None,
         help="The number of processes to use for the preprocessing.",
     )
+    # TODO(rlogan): Use with datasets when added back.
     parser.add_argument(
         "--overwrite_cache",
         action="store_true",
@@ -264,6 +218,7 @@ def parse_args():
         default="cuda",
         help="Device to use for training",
     )
+    # TODO(rlogan): Add tracking
     parser.add_argument(
         "--with_tracking",
         action="store_true",
@@ -290,15 +245,8 @@ def parse_args():
 
     args = parser.parse_args()
 
-    # Sanity checks
-    """
-    if args.dataset_name is None and args.train_file is None and args.validation_file is None:
-        raise ValueError("Need either a dataset name or a training/validation file.")
-    if args.push_to_hub:
-        if args.output_dir is None:
-            raise ValueError("Need an `output_dir` to create a repo when `--push_to_hub` is passed.")
-    """
     return args
+
 
 def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
     os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
@@ -313,15 +261,9 @@ def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
     torch.save(checkpoint, checkpoint_path)
     logging.info(f"Checkpoint saved at epoch {epoch}, step {step}")
 
+
 def main():
     args = parse_args()
-
-    # log_file = os.path.join(args.output_dir, "output.log")
-    # logging.basicConfig(
-    #     level=logging.DEBUG,
-    #     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    #     # handlers=[logging.FileHandler(log_file, "w"), logging.StreamHandler()],
-    # )
 
     if is_fast_path_available:
         logger.info('Fast path is available.')
@@ -372,7 +314,7 @@ def main():
         chunked_dataset = ed.chunk_dataset(tokenized_dataset, args.chunk_size)
         batched_chunks = ed.batch_chunks(
             chunked_dataset, args.batch_size
-        )  # batched_chunks[batch_number]['input_ids'][instance_number]
+        )
     else:
         chunked_dataset = ed.chunk_dataset_varied(tokenized_dataset)
         batched_chunks = ed.batch_chunks_varied(
@@ -409,13 +351,11 @@ def main():
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
 
     # Scheduler and math around the number of training steps.
-    overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(
         len(batched_chunks) / args.gradient_accumulation_steps
     )
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-        overrode_max_train_steps = True
 
     lr_scheduler = get_scheduler(
         name=args.lr_scheduler_type,
@@ -481,7 +421,6 @@ def main():
                             + " in directory "
                             + str(output_dir)
                         )
-                        # model.save_pretrained(output_dir)
                         save_checkpoint(
                             model, optimizer, lr_scheduler, epoch, step, output_dir
                         )
@@ -489,10 +428,7 @@ def main():
                         break
 
     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
-    #model.save_pretrained(output_dir)
-    save_checkpoint(
-                    model, optimizer, lr_scheduler, epoch, step, output_dir
-                    )
+    save_checkpoint(model, optimizer, lr_scheduler, epoch, step, output_dir)
     logging.info(
         "Saving final checkpoint for epoch "
         + str(epoch)

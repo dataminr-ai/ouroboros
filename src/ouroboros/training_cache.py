@@ -41,7 +41,6 @@ from transformers import (
 from transformers.cache_utils import MambaCache
 from transformers.models.mamba import MambaConfig
 from transformers.models.mamba.modeling_mamba import is_fast_path_available
-from transformers.utils.versions import require_version
 
 import ouroboros.encode_dataset as ed
 from ouroboros.decode_cache import reconstruct
@@ -51,10 +50,7 @@ from ouroboros.models import (
     TrainableMambaCache,
 )
 
-require_version(
-    "datasets>=2.14.0",
-    "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt",
-)
+
 AutoModelForCausalLM.register(MambaDecoderConfig, MambaDecoderForCausalLM)
 
 logger = logging.getLogger(__name__)
@@ -87,7 +83,6 @@ def parse_args():
         help="Path to pretrained model or model identifier from huggingface.co/models.",
         required=False,
     )
-
     parser.add_argument(
         "--reg",
         type=bool,
@@ -95,7 +90,6 @@ def parse_args():
         default=False,
         required=False,
     )
-
     parser.add_argument(
         "--reg_strength",
         type=float,
@@ -103,14 +97,12 @@ def parse_args():
         default=0,
         required=False,
     )
-
     parser.add_argument(
         "--reconstructor",
         type=str,
         help="Check point for reconstructor",
         required=False,
     )
-
     parser.add_argument(
         "--learning_rate",
         type=float,
@@ -161,38 +153,22 @@ def parse_args():
     parser.add_argument(
         "--output_dir", type=str, default=None, help="Where to store the final model."
     )
+    # TODO(rlogan): Use or lose
     parser.add_argument(
         "--seed", type=int, default=None, help="A seed for reproducible training."
     )
-
+    # TODO(rlogan): Use or lose
     parser.add_argument(
         "--preprocessing_num_workers",
         type=int,
         default=None,
         help="The number of processes to use for the preprocessing.",
     )
+    # TODO(rlogan): Use or lose
     parser.add_argument(
         "--overwrite_cache",
         action="store_true",
         help="Overwrite the cached training and evaluation sets",
-    )
-    parser.add_argument(
-        "--no_keep_linebreaks",
-        action="store_true",
-        help="Do not keep line breaks when using TXT files.",
-    )
-    parser.add_argument(
-        "--push_to_hub",
-        action="store_true",
-        help="Whether or not to push the model to the Hub.",
-    )
-    parser.add_argument(
-        "--hub_model_id",
-        type=str,
-        help="The name of the repository to keep in sync with the local `output_dir`.",
-    )
-    parser.add_argument(
-        "--hub_token", type=str, help="The token to use to push to the Model Hub."
     )
     parser.add_argument(
         "--trust_remote_code",
@@ -209,13 +185,13 @@ def parse_args():
         default=None,
         help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.",
     )
+    # TODO(rlogan): Use or lose
     parser.add_argument(
         "--resume_from_checkpoint",
         type=str,
         default=None,
         help="If the training should continue from a checkpoint folder.",
     )
-
     parser.add_argument(
         "--batch_size",
         type=int,
@@ -233,6 +209,7 @@ def parse_args():
         default=None,
         help="Prompt to initiate the cache",
     )
+    # TODO(rlogan): Add tracking support.
     parser.add_argument(
         "--with_tracking",
         action="store_true",
@@ -248,6 +225,7 @@ def parse_args():
             "Only applicable when `--with_tracking` is passed."
         ),
     )
+    # TODO(rlogan): Use or lose.
     parser.add_argument(
         "--low_cpu_mem_usage",
         action="store_true",
@@ -264,7 +242,6 @@ def parse_args():
 
 def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
     os.makedirs(checkpoint_path, exist_ok=True)
-    # print("Made directory")    #model.save_pretrained(checkpoint_path)
     checkpoint_path = os.path.join(checkpoint_path, "training_state.bin")
     checkpoint = {
         "epoch": epoch,
@@ -343,7 +320,6 @@ def main():
     # Load Dataset
     dataset = load_dataset(args.train_file)
     dataset = [tokenize_example(example, tokenizer) for example in dataset]
-    # dataset = dataset.map(lambda example: tokenize_example(example, tokenizer))
 
     train_loader = DataLoader(
         dataset,
@@ -374,7 +350,7 @@ def main():
     )
 
     params_to_optimize = [{"params": encoder_cache_params.parameters()}]
-    optimizer = torch.optim.AdamW(params_to_optimize, lr=args.learning_rate)
+    optimizer = torch.optim.AdamW(params_to_optimize, lr=args.learning_rate, weight_decay=args.weight_decay)
 
     # Scheduler and math around the number of training steps.
     num_update_steps_per_epoch = math.ceil(
@@ -483,7 +459,6 @@ def main():
                                 + " in directory "
                                 + str(output_dir)
                             )
-                            # model.save_pretrained(output_dir)
                             save_checkpoint(
                                 encoder_cache_params,
                                 optimizer,
@@ -493,7 +468,6 @@ def main():
                                 output_dir,
                             )
     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
-    # model.save_pretrained(output_dir)
     save_checkpoint(
         encoder_cache_params, optimizer, lr_scheduler, epoch, step, output_dir
     )

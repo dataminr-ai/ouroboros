@@ -1,6 +1,0 @@
-transformers
-accelerate
-datasets
-mamba-ssm
-causal_conv1d
-rouge_score==0.1.2
