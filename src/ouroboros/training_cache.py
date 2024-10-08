@@ -30,6 +30,7 @@ import os
 
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from transformers import (
     MODEL_MAPPING,
@@ -223,28 +224,10 @@ def parse_args():
     )
     # TODO(rlogan): Add tracking support.
     parser.add_argument(
-        "--with_tracking",
-        action="store_true",
-        help="Whether to enable experiment trackers for logging.",
-    )
-    parser.add_argument(
-        "--report_to",
+        "--tensorboard_experiment",
         type=str,
-        default="all",
-        help=(
-            'The integration to report the results and logs to. Supported platforms are `"tensorboard"`,'
-            ' `"wandb"`, `"comet_ml"` and `"clearml"`. Use `"all"` (default) to report to all integrations. '
-            "Only applicable when `--with_tracking` is passed."
-        ),
-    )
-    # TODO(rlogan): Use or lose.
-    parser.add_argument(
-        "--low_cpu_mem_usage",
-        action="store_true",
-        help=(
-            "It is an option to create the model as an empty shell, then only materialize its parameters when the pretrained weights are loaded. "
-            "If passed, LLM loading time and RAM consumption will be benefited."
-        ),
+        default=None,
+        help="Name of the experiment for Tensorboard.",
     )
 
     args = parser.parse_args()
@@ -324,8 +307,9 @@ def validate(model, encoder_cache_params, valid_loader, batch_size, device):
                     loss += batch_loss.item()
                     total += 1
                     steps += 1
-        valid_loss = loss / total
-        return valid_loss
+                    pbar.update(1)
+    valid_loss = loss / total
+    return valid_loss
 
 def main():
     args = parse_args()
@@ -338,6 +322,7 @@ def main():
         logger.info(
             "Fast path is not available. Enabling will greatly speed up encoding."
         )
+    writer = SummaryWriter(log_dir=f'runs/{args.tensorboard_experiment}')
 
     tokenizer = AutoTokenizer.from_pretrained(
         args.decoder,
@@ -359,9 +344,21 @@ def main():
         collate_fn=lambda batch: collate_fn(batch, args.max_seq_len),
     )
 
+    if args.validation_file:
+        validation_dataset = load_dataset(args.validation_file)
+        validation_dataset = [
+            tokenize_example(example, tokenizer) for example in validation_dataset
+        ]
+        valid_loader = DataLoader(
+            validation_dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            collate_fn=lambda batch: collate_fn(batch, args.max_seq_len),
+        )  
+
     # Initialize cache
     if args.starting_prompt is not None:
-        prompt = ["Pick the best option that answers the question.\n"]
+        prompt = [args.starting_prompt]
         token_prompt = tokenizer(prompt, return_tensors="pt").to(args.device)
         with torch.no_grad():
             encoded_prompt = ed.get_cache_params(token_prompt["input_ids"], model)
@@ -479,6 +476,7 @@ def main():
 
                         completed_steps += 1
                         pbar.update(1)
+                        writer.add_scalar('Loss/train', loss.item(), completed_steps)
 
                         if completed_steps % checkpointing_steps == 0:
                             output_dir = f"step_{completed_steps}"
@@ -506,6 +504,7 @@ def main():
                             )
                             logger.info("Validation Loss: " + str(valid_loss))
                             model.train()
+                            writer.add_scalar('Loss/valid', valid_loss, completed_steps)
     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
     save_checkpoint(
         encoder_cache_params, optimizer, lr_scheduler, epoch, step, output_dir
