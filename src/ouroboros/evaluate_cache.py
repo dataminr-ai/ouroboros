@@ -101,6 +101,26 @@ def collate_contrastive_fn(x, max_len=200):
         "label": labels,
     }
 
+def calculate_correct(logits, labels):
+    # Restrict logits to label tokens
+    unique_labels=[17,18]
+    vocab_size = logits.size(-1)
+    mask = torch.full((vocab_size,), float('-inf'), device=logits.device)  
+    mask[unique_labels] = 0 
+    restricted_logits = logits + mask
+
+    # Predictions over restricted tokens
+    predictions = torch.argmax(restricted_logits, dim=-1)
+    print(predictions)
+    # Find the last non -100 label for each sequence (last token label)
+    flat_labels = labels.view(-1)
+    # Remove the -100 values
+    flat_labels = flat_labels[flat_labels != -100]
+    print(flat_labels)
+    correct_predictions = (predictions == flat_labels).sum().item()
+    print('Number correct: ', correct_predictions)
+    return correct_predictions
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Finetune a transformers model on a causal language modeling task"
@@ -176,15 +196,18 @@ def main():
         dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        collate_fn=collate_contrastive_fn,
+        collate_fn=lambda batch: collate_contrastive_fn(batch, args.max_seq_len),
         )
     else:
         dataset = [tokenize_example(example, tokenizer) for example in dataset]
+        print(len(dataset))
+        dataset = [example for example in dataset if len(example['labels']) <= args.max_seq_len]
+        print(len(dataset))
         data_loader = DataLoader(
             dataset,
             batch_size=args.batch_size,
             shuffle=True,
-            collate_fn=collate_fn,
+            collate_fn=lambda batch: collate_fn(batch, args.max_seq_len),
         )
 
     # Model
@@ -203,14 +226,22 @@ def main():
         encoder_cache_params.conv_states = cache.learned_conv_state.expand([-1, args.batch_size, -1, -1]).to(device)
         encoder_cache_params.ssm_states = cache.learned_ssm_state.expand([-1, args.batch_size, -1, -1]).to(device)
     
+    '''
+    for idx, batch in enumerate(data_loader):
+        print(idx)
+        labels=batch["labels"]
+        flat_labels = labels.view(-1)
+        flat_labels = flat_labels[flat_labels != -100]
+        print('Flat Labels: ', flat_labels)
+    '''
 
     metric=0
     total=0
     for idx, batch in enumerate(data_loader):
         print(idx)
         batch = {k: v.to(device) for k, v in batch.items()}
-        if batch["label"].shape[0] == args.batch_size:
-            if args.metric == 'contrastive':
+        if batch["labels"].shape[0] == args.batch_size:
+            if args.metric == 'contrastive-accuracy':
                 with torch.no_grad():
                     if args._get_args:
                         outputs1= model(input_ids=batch["sol1"], labels=batch["sol1"], encoder_cache_params=encoder_cache_params)                        
@@ -232,14 +263,27 @@ def main():
                 total+=1
             else:
                 with torch.no_grad():
-                    if args.cache_dir:
-                        outputs = model(**batch, encoder_cache_params=encoder_cache_params)
-                    else:
-                        outputs = model(**batch)
-                batch_loss = outputs.loss
-                print('Batch loss:', batch_loss.item())
-                metric+=batch_loss.item()
-                total+=1
+                    if args.metric  == "loss":
+                        if args.cache_dir:
+                            outputs = model(**batch, encoder_cache_params=encoder_cache_params)
+                        else:
+                            outputs = model(**batch)
+                        batch_metric = outputs.loss
+                        print('Batch Loss:', batch_metric.item())
+                        if torch.isnan(batch_metric):
+                            print(batch['labels'])
+                        else:
+                            metric+=batch_metric.item()
+                            total+=1
+                    elif args.metric == "accuracy":
+                        outputs = model(batch['input_ids'])
+                        outputs = model(batch['input_ids'])
+                        logits = outputs.logits[:, -1, :]
+                        batch_correct=calculate_correct(logits, batch['labels'])
+                        metric += batch_correct
+                        total += batch["labels"].shape[0]
+
+                                    
     print('Metric:', metric/total)
     if args.output_path:
         with open(args.output_path, "w") as file:

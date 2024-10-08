@@ -222,13 +222,6 @@ def parse_args():
         default=None,
         help="Prompt to initiate the cache",
     )
-    # TODO(rlogan): Add tracking support.
-    parser.add_argument(
-        "--tensorboard_experiment",
-        type=str,
-        default=None,
-        help="Name of the experiment for Tensorboard.",
-    )
 
     args = parser.parse_args()
 
@@ -322,7 +315,7 @@ def main():
         logger.info(
             "Fast path is not available. Enabling will greatly speed up encoding."
         )
-    writer = SummaryWriter(log_dir=f'runs/{args.tensorboard_experiment}')
+    writer = SummaryWriter(log_dir=args.output_dir)
 
     tokenizer = AutoTokenizer.from_pretrained(
         args.decoder,
