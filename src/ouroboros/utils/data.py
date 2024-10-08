@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional, Union
 
-from datasets import Features, load_dataset, Dataset
+from datasets import Dataset, Features, load_dataset
 from transformers import PreTrainedTokenizerBase
 
 
@@ -21,6 +21,10 @@ def load_dataset_from_files(
     return dataset
 
 
-def tokenize_dataset(dataset: Dataset, tokenizer: PreTrainedTokenizerBase):
-    dataset = dataset.map()
+def tokenize_dataset(dataset: Dataset, tokenizer: PreTrainedTokenizerBase, field: Optional[str] = None, 
+                     tokenizer_kwargs: Dict[str, Any] = {}, dataset_kwargs: Dict[str, Any]= {}):
+    dataset = dataset.map(
+        lambda example: tokenizer(text=example[field] if field else example, **tokenizer_kwargs), 
+        **dataset_kwargs
+    )
     return dataset
