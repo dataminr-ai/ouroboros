@@ -222,6 +222,17 @@ def parse_args():
         default=None,
         help="Prompt to initiate the cache",
     )
+    parser.add_argument(
+        "--add_eos",
+        action="store_true",
+        help="Whether to add EOS token to end of labels.",
+    )
+    parser.add_argument(
+        "--validation_limit",
+        type=int,
+        default=-1,
+        help="Limits the number of validation batches (for development)",
+    )
 
     args = parser.parse_args()
 
@@ -250,7 +261,7 @@ def load_dataset(file_path):
     return dataset
 
 
-def tokenize_example(example, tokenizer):
+def tokenize_example(example, tokenizer, add_eos=False):
     tokenized_inputs = tokenizer(
         example["inputs"],
         return_attention_mask=False,
@@ -259,6 +270,8 @@ def tokenize_example(example, tokenizer):
         example["label_str"],
         return_attention_mask=False,
     )
+    if add_eos:
+        tokenized_label["input_ids"] += [tokenizer.eos_token_id]
     input_ids = tokenized_inputs["input_ids"] + tokenized_label["input_ids"]
     labels = [-100] * len(tokenized_inputs["input_ids"]) + tokenized_label["input_ids"]
     return {"input_ids": input_ids, "labels": labels}
@@ -283,26 +296,6 @@ def collate_fn(x, max_len=200):
         "labels": labels,
     }
 
-def validate(model, encoder_cache_params, valid_loader, batch_size, device):
-    model.eval()
-    loss=0
-    total=0
-    steps=0
-    max_steps = len(valid_loader)
-    with torch.no_grad():
-        with tqdm(total=max_steps, desc="Validation Progress") as pbar:
-            pbar.update(steps)
-            for batch in valid_loader:
-                if batch["input_ids"].shape[0] == batch_size:
-                    batch = {k: v.to(device) for k, v in batch.items()}
-                    outputs = model(**batch, encoder_cache_params=encoder_cache_params,)
-                    batch_loss = outputs.loss
-                    loss += batch_loss.item()
-                    total += 1
-                    steps += 1
-                    pbar.update(1)
-    valid_loss = loss / total
-    return valid_loss
 
 def main():
     args = parse_args()
@@ -315,7 +308,7 @@ def main():
         logger.info(
             "Fast path is not available. Enabling will greatly speed up encoding."
         )
-    writer = SummaryWriter(log_dir=args.output_dir)
+    summary_writer = SummaryWriter(log_dir=args.output_dir)
 
     tokenizer = AutoTokenizer.from_pretrained(
         args.decoder,
@@ -326,9 +319,14 @@ def main():
     model.to(args.device)
     model.train()
 
+    breakpoint()
+
     # Load Dataset
     dataset = load_dataset(args.train_file)
-    dataset = [tokenize_example(example, tokenizer) for example in dataset]
+    dataset = [
+        tokenize_example(example, tokenizer, add_eos=args.add_eos)
+        for example in dataset
+    ]
 
     train_loader = DataLoader(
         dataset,
@@ -347,7 +345,7 @@ def main():
             batch_size=args.batch_size,
             shuffle=True,
             collate_fn=lambda batch: collate_fn(batch, args.max_seq_len),
-        )  
+        )
 
     # Initialize cache
     if args.starting_prompt is not None:
@@ -371,7 +369,9 @@ def main():
     )
 
     params_to_optimize = [{"params": encoder_cache_params.parameters()}]
-    optimizer = torch.optim.AdamW(params_to_optimize, lr=args.learning_rate, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(
+        params_to_optimize, lr=args.learning_rate, weight_decay=args.weight_decay
+    )
 
     # Scheduler and math around the number of training steps.
     num_update_steps_per_epoch = math.ceil(
@@ -404,6 +404,64 @@ def main():
         decoder.eval()
         decoder.to(args.device)
 
+    def validate(batch_size, device):
+        model.eval()
+        acc_num = 0
+        acc_denom = 0
+        loss = 0
+        total = 0
+        steps = 0
+        max_steps = len(valid_loader)
+        learned_cache_params = MambaCache(
+            config=model.config, max_batch_size=1, dtype=model.dtype
+        )
+        learned_cache_params.conv_states = (
+            encoder_cache_params.learned_conv_state.detach().clone()
+        )
+        learned_cache_params.ssm_states = (
+            encoder_cache_params.learned_ssm_state.detach().clone()
+        )
+        with torch.no_grad():
+            with tqdm(total=max_steps, desc="Validation Progress") as pbar:
+                pbar.update(steps)
+                for i, batch in enumerate(valid_loader):
+                    if i == args.validation_limit:
+                        break
+                    if batch["input_ids"].shape[0] == batch_size:
+                        batch = {k: v.to(device) for k, v in batch.items()}
+                        outputs = model(
+                            **batch,
+                            encoder_cache_params=encoder_cache_params,
+                        )
+                        # NOTE(rlogan): This is a kludge. We shouldn't teacher force.
+                        # First we need to offset the labels and get the offset predictions
+                        labels = batch["labels"][:, 1:]
+                        preds = outputs.logits.argmax(dim=-1)[:, :-1]
+                        # Next, we need to ignore all of the non-label token predictions
+                        preds[labels == -100] = -100
+                        # Finally, the accuracy is where the pred-label equal token count equals the sequence length.
+                        acc_num += (
+                            ((preds == labels).sum(dim=-1) == labels.size(1))
+                            .sum()
+                            .item()
+                        )
+                        acc_denom += labels.size(0)
+                        batch_loss = outputs.loss
+                        loss += batch_loss.item()
+                        total += 1  # This should probably be normalized by batch size
+                        steps += 1
+                        pbar.update(1)
+        valid_loss = loss / total
+        valid_acc = acc_num / (acc_denom + 1e-13)
+        logger.info("Validation Loss: " + str(valid_loss))
+        logger.info("Validation Acc: " + str(valid_acc))
+        return valid_loss, valid_acc
+
+    # valid_loss, valid_acc = validate(args.batch_size, args.device)
+    # summary_writer.add_scalar('Loss/valid', valid_loss, completed_steps)
+    # summary_writer.add_scalar('Acc/valid', valid_acc, completed_steps)
+    # model.train()
+
     with tqdm(total=args.max_train_steps, desc="Training Progress") as pbar:
         pbar.update(completed_steps)
         for epoch in range(0, args.num_train_epochs):
@@ -412,7 +470,6 @@ def main():
                     batch = {k: v.to(args.device) for k, v in batch.items()}
 
                     if batch["input_ids"].shape[0] == args.batch_size:
-                        logger.info("Step: " + str(completed_steps))
                         outputs = model(
                             **batch,
                             encoder_cache_params=encoder_cache_params,
@@ -457,10 +514,6 @@ def main():
                                 ssm_dist + conv_dist
                             )
 
-                        logger.info("Loss: " + str(loss.item()))
-                        logger.info(
-                            "Memory: " + str(torch.cuda.memory_allocated()) + "\n"
-                        )
                         loss.backward()
 
                         optimizer.step()
@@ -469,7 +522,9 @@ def main():
 
                         completed_steps += 1
                         pbar.update(1)
-                        writer.add_scalar('Loss/train', loss.item(), completed_steps)
+                        summary_writer.add_scalar(
+                            "Loss/train", loss.item(), completed_steps
+                        )
 
                         if completed_steps % checkpointing_steps == 0:
                             output_dir = f"step_{completed_steps}"
@@ -489,15 +544,18 @@ def main():
                                 step,
                                 output_dir,
                             )
-                        
-                        if args.validation_file and completed_steps % args.validation_steps == 0:
-                            print('Validating...')
-                            valid_loss = validate(
-                                model, encoder_cache_params, valid_loader, args.batch_size, args.device
+
+                        if completed_steps % args.validation_steps == 0:
+                            valid_loss, valid_acc = validate(
+                                args.batch_size, args.device
                             )
-                            logger.info("Validation Loss: " + str(valid_loss))
+                            summary_writer.add_scalar(
+                                "Loss/valid", valid_loss, completed_steps
+                            )
+                            summary_writer.add_scalar(
+                                "Acc/valid", valid_acc, completed_steps
+                            )
                             model.train()
-                            writer.add_scalar('Loss/valid', valid_loss, completed_steps)
     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
     save_checkpoint(
         encoder_cache_params, optimizer, lr_scheduler, epoch, step, output_dir
