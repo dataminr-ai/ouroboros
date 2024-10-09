@@ -4,19 +4,21 @@ from datasets import Dataset, Features, load_dataset
 from transformers import PreTrainedTokenizerBase
 
 
-def load_dataset_from_files(
-        filepaths: Union[str, List[str], Dict[str, Union[str, List[str]]]], 
-        type: str = "json", field: Optional[str] = None, split: Optional[str] = None,
-        features: Optional[Dict[str, Any]] = None,
+def load_dataset_from_files_or_hf(
+        type_or_huggingface_path: str = "json",
+        filepaths: Optional[Union[str, List[str], Dict[str, Union[str, List[str]]]]] = None, 
+        field: Optional[str] = None, split: Optional[str] = None,
+        features: Optional[Dict[str, Any]] = None, **kwargs
     ):
     if features:
         features = Features.from_dict(features)
     dataset = load_dataset(
-        type,
+        path=type_or_huggingface_path,
         data_files=filepaths,
         field=field,
         split=split,
-        features=features
+        features=features,
+        **kwargs
     )
     return dataset
 
