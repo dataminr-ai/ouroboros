@@ -24,9 +24,10 @@ def load_dataset_from_files_or_hf(
 
 
 def tokenize_dataset(dataset: Dataset, tokenizer: PreTrainedTokenizerBase, field: Optional[str] = None, 
-                     tokenizer_kwargs: Dict[str, Any] = {}, dataset_kwargs: Dict[str, Any]= {}):
+                     return_tensors: str = "pt", tokenizer_kwargs: Dict[str, Any] = {}, 
+                     dataset_kwargs: Dict[str, Any]= {}):
     dataset = dataset.map(
-        lambda example: tokenizer(text=example[field] if field else example, **tokenizer_kwargs), 
+        lambda example: tokenizer(text=example[field] if field else example, **tokenizer_kwargs, return_tensors=return_tensors), 
         **dataset_kwargs
     )
     return dataset
