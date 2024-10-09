@@ -54,7 +54,8 @@ def get_cache_state_for_batch(batch: torch.Tensor, model: PreTrainedModel) -> to
 def move_cache_to_device(mamba_cache: MambaCache, device: torch.device) -> MambaCache:
     """
     Function to move MambaCache parameters to a device. 
-    The MambaCache class in huggingface does not have a .to(device) function
+    The MambaCache class in huggingface modeling_mamba.py 
+        does not have a .to(device) function 
         and needs to be handled this way.
     """
     for key in mamba_cache.ssm_states:
