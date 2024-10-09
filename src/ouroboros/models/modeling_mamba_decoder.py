@@ -76,9 +76,15 @@ class MambaDecoderMixer(nn.Module):
         self.use_mambapy = config.use_mambapy
 
         # projection of the input hidden states
-        self.in_proj = nn.Linear(self.hidden_size, self.intermediate_size * 2, bias=config.use_bias)
+        self.in_proj = nn.Linear(
+            self.hidden_size, self.intermediate_size * 2, bias=config.use_bias
+        )
         # selective projection used to make dt, B and C input dependant
-        self.x_proj = nn.Linear(self.intermediate_size, self.time_step_rank + self.ssm_state_size * 2, bias=False)
+        self.x_proj = nn.Linear(
+            self.intermediate_size,
+            self.time_step_rank + self.ssm_state_size * 2,
+            bias=False,
+        )
         # time step projection (discretization)
         self.dt_proj = nn.Linear(self.time_step_rank, self.intermediate_size, bias=True)
 
@@ -89,13 +95,15 @@ class MambaDecoderMixer(nn.Module):
 
         self.A_log = nn.Parameter(torch.log(A))
         self.D = nn.Parameter(torch.ones(self.intermediate_size))
-        self.out_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=config.use_bias)
+        self.out_proj = nn.Linear(
+            self.intermediate_size, self.hidden_size, bias=config.use_bias
+        )
         self.use_bias = config.use_bias
 
         if self.use_mambapy:
-            logger.warning_once('Using mambapy')
+            logger.warning_once("Using mambapy")
         else:
-            logger.warning_once('Not using mambapy')
+            logger.warning_once("Not using mambapy")
 
     # fmt: off
     def forward(
@@ -161,10 +169,15 @@ class MambaDecoderMixer(nn.Module):
         discrete_time_step = nn.functional.softplus(discrete_time_step).transpose(1, 2) # [batch, intermediate_size, seq_len]
 
         # 3.b. Discretization: B and C to [batch, seq_len, intermediate_size, ssm_state_size] (SRAM)
-        A = -torch.exp(self.A_log.float())  # [intermediate_size, ssm_state_size]
-        discrete_A = torch.exp(A[None, :, None, :] * discrete_time_step[:, :, :, None]) # [batch, intermediate_size, seq_len, ssm_state_size]
-        discrete_B = discrete_time_step[:, :, :, None] * B[:, None, :, :].float()  # [batch, intermediate_size, seq_len, ssm_state_size]
-        deltaB_u = discrete_B * hidden_states[:, :, :, None].float()
+        # TODO(rlogan): There is originally a float cast here (I think due to some issue with half-precision exp)
+        # A = -torch.exp(self.A_log.float())  # [intermediate_size, ssm_state_size]
+        # discrete_A = torch.exp(A[None, :, None, :] * discrete_time_step[:, :, :, None]) # [batch, intermediate_size, seq_len, ssm_state_size]
+        # discrete_B = discrete_time_step[:, :, :, None] * B[:, None, :, :].float()  # [batch, intermediate_size, seq_len, ssm_state_size]
+        # deltaB_u = discrete_B * hidden_states[:, :, :, None].float()
+        A = -torch.exp(self.A_log)  # [intermediate_size, ssm_state_size]
+        discrete_A = torch.exp(A[None, :, None, :] * discrete_time_step[:, :, :, None])  # [batch, intermediate_size, seq_len, ssm_state_size]
+        discrete_B = discrete_time_step[:, :, :, None] * B[:, None, :, :]  # [batch, intermediate_size, seq_len, ssm_state_size]
+        deltaB_u = discrete_B * hidden_states[:, :, :, None]
 
         # NOTE(rlogan): Here is the trick. To condition on the encoder ssm state in pscan we prepend it to deltaB_u
         if encoder_cache_params is not None:
@@ -230,7 +243,9 @@ class MambaDecoderBlock(nn.Module):
         self.config = config
         self.layer_idx = layer_idx
         self.residual_in_fp32 = config.residual_in_fp32
-        self.norm = MambaDecoderRMSNorm(config.hidden_size, eps=config.layer_norm_epsilon)
+        self.norm = MambaDecoderRMSNorm(
+            config.hidden_size, eps=config.layer_norm_epsilon
+        )
         self.mixer = MambaDecoderMixer(config, layer_idx=layer_idx)
 
     def forward(
@@ -245,7 +260,12 @@ class MambaDecoderBlock(nn.Module):
         if self.residual_in_fp32:
             residual = residual.to(torch.float32)
 
-        hidden_states = self.mixer(hidden_states, cache_params=cache_params, cache_position=cache_position, encoder_cache_params=encoder_cache_params)
+        hidden_states = self.mixer(
+            hidden_states,
+            cache_params=cache_params,
+            cache_position=cache_position,
+            encoder_cache_params=encoder_cache_params,
+        )
         hidden_states = residual + hidden_states
         return hidden_states
 
@@ -276,7 +296,10 @@ class MambaDecoderPreTrainedModel(PreTrainedModel):
 
             dt = torch.exp(
                 torch.rand(self.config.intermediate_size)
-                * (math.log(self.config.time_step_max) - math.log(self.config.time_step_min))
+                * (
+                    math.log(self.config.time_step_max)
+                    - math.log(self.config.time_step_min)
+                )
                 + math.log(self.config.time_step_min)
             ).clamp(min=self.config.time_step_floor)
             # Inverse of softplus: https://github.com/pytorch/pytorch/issues/72759
@@ -421,10 +444,17 @@ class MambaDecoderModel(MambaDecoderPreTrainedModel):
         super().__init__(config)
 
         self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.layers = nn.ModuleList([MambaDecoderBlock(config, layer_idx=idx) for idx in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList(
+            [
+                MambaDecoderBlock(config, layer_idx=idx)
+                for idx in range(config.num_hidden_layers)
+            ]
+        )
 
         self.gradient_checkpointing = False
-        self.norm_f = MambaDecoderRMSNorm(config.hidden_size, eps=config.layer_norm_epsilon)
+        self.norm_f = MambaDecoderRMSNorm(
+            config.hidden_size, eps=config.layer_norm_epsilon
+        )
         # Initialize weights and apply final processing
         self._register_load_state_dict_pre_hook(self.load_hook)
         self.post_init()
@@ -460,10 +490,18 @@ class MambaDecoderModel(MambaDecoderPreTrainedModel):
         **kwargs,  # `attention_mask` is passed by the tokenizer and we don't want it
     ) -> Union[Tuple, MambaDecoderOutput]:
         output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
         )
-        use_cache = use_cache if use_cache is not None else (self.config.use_cache if not self.training else False)
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        use_cache = (
+            use_cache
+            if use_cache is not None
+            else (self.config.use_cache if not self.training else False)
+        )
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         if (input_ids is None) ^ (inputs_embeds is not None):  # ^ is python for xor
             raise ValueError(
@@ -479,9 +517,14 @@ class MambaDecoderModel(MambaDecoderPreTrainedModel):
         if use_cache and encoder_cache_params is None:
             if cache_params is None:
                 cache_params = MambaCache(
-                    self.config, inputs_embeds.size(0), device=inputs_embeds.device, dtype=inputs_embeds.dtype
+                    self.config,
+                    inputs_embeds.size(0),
+                    device=inputs_embeds.device,
+                    dtype=inputs_embeds.dtype,
                 )
-                cache_position = torch.arange(0, self.config.conv_kernel, device=inputs_embeds.device)
+                cache_position = torch.arange(
+                    0, self.config.conv_kernel, device=inputs_embeds.device
+                )
             elif cache_position is None:
                 # cases when we do manual forward instead of using `model.generate` which will initiate
                 # `cache_position` and makes sure it is not None, throw error here instead of doing some
@@ -499,10 +542,19 @@ class MambaDecoderModel(MambaDecoderPreTrainedModel):
         for mixer_block in self.layers:
             if self.gradient_checkpointing and self.training:
                 hidden_states = self._gradient_checkpointing_func(
-                    mixer_block.__call__, hidden_states, cache_params, cache_position
+                    mixer_block.__call__,
+                    hidden_states,
+                    cache_params,
+                    cache_position,
+                    encoder_cache_params,
                 )
             else:
-                hidden_states = mixer_block(hidden_states, cache_params=cache_params, cache_position=cache_position, encoder_cache_params=encoder_cache_params)
+                hidden_states = mixer_block(
+                    hidden_states,
+                    cache_params=cache_params,
+                    cache_position=cache_position,
+                    encoder_cache_params=encoder_cache_params,
+                )
 
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
@@ -513,7 +565,11 @@ class MambaDecoderModel(MambaDecoderPreTrainedModel):
             all_hidden_states = all_hidden_states + (hidden_states,)
 
         if not return_dict:
-            return tuple(v for v in [hidden_states, cache_params, all_hidden_states] if v is not None)
+            return tuple(
+                v
+                for v in [hidden_states, cache_params, all_hidden_states]
+                if v is not None
+            )
 
         return MambaDecoderOutput(
             last_hidden_state=hidden_states,
@@ -552,7 +608,11 @@ class MambaDecoderForCausalLM(MambaDecoderPreTrainedModel):
         return self.backbone.set_input_embeddings(new_embeddings)
 
     def _update_model_kwargs_for_generation(
-        self, outputs: ModelOutput, model_kwargs: Dict[str, Any], num_new_tokens: int = 1, **kwargs
+        self,
+        outputs: ModelOutput,
+        model_kwargs: Dict[str, Any],
+        num_new_tokens: int = 1,
+        **kwargs,
     ) -> Dict[str, Any]:
         model_kwargs["cache_params"] = outputs.get("cache_params", None)
         if (
@@ -560,7 +620,9 @@ class MambaDecoderForCausalLM(MambaDecoderPreTrainedModel):
             and "cache_position" in model_kwargs
             and model_kwargs["cache_position"] is not None
         ):
-            model_kwargs["cache_position"] = model_kwargs["cache_position"][-1:] + num_new_tokens
+            model_kwargs["cache_position"] = (
+                model_kwargs["cache_position"][-1:] + num_new_tokens
+            )
 
         return model_kwargs
 
@@ -588,7 +650,9 @@ class MambaDecoderForCausalLM(MambaDecoderPreTrainedModel):
                 # considering padding will be applied when input length is shorter, and truncation
                 # will be applied when it is longer, so it will be equivalent to always have it match
                 # the length of `cache_params.conv_states`, which is `config.conv_kernel`
-                cache_position = torch.arange(0, self.config.conv_kernel, device=input_ids.device)
+                cache_position = torch.arange(
+                    0, self.config.conv_kernel, device=input_ids.device
+                )
 
         if inputs_embeds is not None and cache_params is None:
             model_inputs = {"inputs_embeds": inputs_embeds}
@@ -629,7 +693,9 @@ class MambaDecoderForCausalLM(MambaDecoderPreTrainedModel):
             `labels = input_ids` Indices are selected in `[-100, 0, ..., config.vocab_size]` All labels set to `-100`
             are ignored (masked), the loss is only computed for labels in `[0, ..., config.vocab_size]`
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         mamba_outputs = self.backbone(
             input_ids,
@@ -654,7 +720,9 @@ class MambaDecoderForCausalLM(MambaDecoderPreTrainedModel):
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
             loss_fct = CrossEntropyLoss()
-            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            loss = loss_fct(
+                shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
+            )
 
         if not return_dict:
             output = (logits,) + mamba_outputs[1:]
