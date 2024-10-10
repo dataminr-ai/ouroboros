@@ -30,6 +30,7 @@ import os
 
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from transformers import (
     MODEL_MAPPING,
@@ -328,6 +329,8 @@ def main():
         collate_fn=lambda batch: collate_fn(batch, args.max_seq_len),
     )
 
+    summary_writer = SummaryWriter(log_dir=args.output_dir)
+
     # Initialize cache
     if args.starting_prompt is not None:
         prompt = ["Pick the best option that answers the question.\n"]
@@ -350,7 +353,9 @@ def main():
     )
 
     params_to_optimize = [{"params": encoder_cache_params.parameters()}]
-    optimizer = torch.optim.AdamW(params_to_optimize, lr=args.learning_rate, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(
+        params_to_optimize, lr=args.learning_rate, weight_decay=args.weight_decay
+    )
 
     # Scheduler and math around the number of training steps.
     num_update_steps_per_epoch = math.ceil(
@@ -391,7 +396,6 @@ def main():
                     batch = {k: v.to(args.device) for k, v in batch.items()}
 
                     if batch["input_ids"].shape[0] == args.batch_size:
-                        logger.info("Step: " + str(completed_steps))
                         outputs = model(
                             **batch,
                             encoder_cache_params=encoder_cache_params,
@@ -436,10 +440,15 @@ def main():
                                 ssm_dist + conv_dist
                             )
 
-                        logger.info("Loss: " + str(loss.item()))
-                        logger.info(
-                            "Memory: " + str(torch.cuda.memory_allocated()) + "\n"
+                        summary_writer.add_scalar(
+                            "train/loss", loss.item(), completed_steps
                         )
+                        summary_writer.add_scalar(
+                            "train/memory",
+                            torch.cuda.memory_allocated(),
+                            completed_steps,
+                        )
+
                         loss.backward()
 
                         optimizer.step()
@@ -453,12 +462,6 @@ def main():
                             output_dir = f"step_{completed_steps}"
                             if args.output_dir is not None:
                                 output_dir = os.path.join(args.output_dir, output_dir)
-                            logging.info(
-                                "Saving Checkpoint at Step"
-                                + str(completed_steps)
-                                + " in directory "
-                                + str(output_dir)
-                            )
                             save_checkpoint(
                                 encoder_cache_params,
                                 optimizer,
@@ -467,15 +470,10 @@ def main():
                                 step,
                                 output_dir,
                             )
+                            # TODO(rlogan): Add eval
     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
     save_checkpoint(
         encoder_cache_params, optimizer, lr_scheduler, epoch, step, output_dir
-    )
-    logging.info(
-        "Saving final checkpoint for epoch "
-        + str(epoch)
-        + "in directory "
-        + str(output_dir)
     )
 
 
