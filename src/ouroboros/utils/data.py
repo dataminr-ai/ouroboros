@@ -1,14 +1,11 @@
 from collections.abc import Mapping
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
-from datasets import Dataset, Features, load_dataset, IterableDataset
+from datasets import Dataset, Features, IterableDataset, load_dataset
 from torch import Generator
 from torch.nn.functional import pad
 from transformers import PreTrainedTokenizerBase
-from transformers.utils.generic import PaddingStrategy
-from transformers.data.data_collator import DataCollatorForLanguageModeling, pad_without_fast_tokenizer_warning, _torch_collate_batch
 
 
 random_generator = Generator()
@@ -105,36 +102,33 @@ def apply_prompt_template_to_dataset(
         )
     )
 
-def tokenize_example(tokenizer: PreTrainedTokenizerBase, example: Dict[str, Any], **tokenizer_kwargs):
+def tokenize_example(tokenizer: PreTrainedTokenizerBase, example: Dict[str, Any], text_field: str = "texts", return_remaining_fields: bool = False):
     outputs = {}
-    for f in fields:
-        output = tokenizer(example[f], **tokenizer_kwargs)
-        if isinstance(output, Mapping):
-            outputs[f] = output["input_ids"]
-        else:
-            outputs[f] = output
+    output = tokenizer(example[text_field], return_attention_mask=False, return_tensors="pt")
+    if isinstance(output, Mapping):
+        outputs["input_ids"] = output["input_ids"]
+    else:
+        outputs["input_ids"] = output
 
-    for key in example.keys():
-        if key not in outputs:
-            outputs[key] = example[key]
+    if return_remaining_fields:
+        for key in example.keys():
+            if key == text_field:
+                continue
+            if key not in outputs:
+                outputs[key] = example[key]
     return outputs
 
 
-def tokenize_dataset(dataset: Dataset, tokenizer: PreTrainedTokenizerBase, fields:  List[str] = None, 
-                     return_tensors: str = "pt", tokenizer_kwargs: Dict[str, Any] = {}, 
-                     dataset_kwargs: Dict[str, Any]= {}):
+def tokenize_dataset(tokenizer: PreTrainedTokenizerBase, dataset: Dataset, text_field: str = "texts", return_remaining_fields: bool = False):
     dataset = dataset.map(
         lambda example: tokenize_example(
             tokenizer=tokenizer,
             example=example,
-            fields=fields,
-            return_tensors=return_tensors,
-            **tokenizer_kwargs
-        ), 
-        **dataset_kwargs
+            text_field=text_field,
+            return_remaining_fields=return_remaining_fields
+        ),
     )
     return dataset
-
 
 
 def _chunk_tensor(tensor: torch.Tensor, pad_token_id: int, chunk_size: Union[Optional[int], Tuple[int, int]] = 4):
