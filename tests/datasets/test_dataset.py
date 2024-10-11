@@ -2,12 +2,12 @@ from pathlib import Path
 
 import pytest
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, DataCollatorForLanguageModeling
 
 from ouroboros.utils.data import (
     load_dataset_from_files_or_hf,
     tokenize_dataset,
-    apply_prompt_template_to_dataset
+    tokenize_dataset_with_prompt_template,
 )
 
 
@@ -40,36 +40,65 @@ def test_load_lambada():
     assert sample_data["train"].dataset_size > 0
     assert sample_data["test"].column_names == ["text", "domain"]
 
-def test_apply_prompt_template():
-    sample_data = load_dataset_from_files_or_hf(type_or_huggingface_path="ybisk/piqa", trust_remote_code=True)
-    prompt_dataset = apply_prompt_template_to_dataset(
-        prompt_template="Your goal is as follows: {goal}. Pick the option corresponding the right solution.\n(1){sol1}\n(2){sol2}"
+def test_tokenized_dataload_for_lm():
+    sample_train_data_file = Path(__file__).parent / "samples" / "sample_train.jsonl"
+    sample_test_data_file = Path(__file__).parent / "samples" / "sample_eval.jsonl"
+    batch_size = 16
+
+    train = load_dataset_from_files_or_hf(
+        filepaths={
+            "train": str(sample_train_data_file),
+            "test": str(sample_test_data_file)
+        },
+        split="train",
+        streaming=True
     )
 
+    tokenizer = AutoTokenizer.from_pretrained("state-spaces/mamba-130m-hf")
 
-# def test_data_loader():
-#     sample_data = load_dataset_from_files_or_hf(type_or_huggingface_path="ybisk/piqa", trust_remote_code=True, split="train")
-#     tokenizer = AutoTokenizer.from_pretrained("state-spaces/mamba-130m-hf")
+    tokenized_dataset = tokenize_dataset(
+        tokenizer=tokenizer, dataset=train, keep_only_relevant_columns={"input_ids"}
+    )
 
-#     fields=["goal", "sol1", "sol2"]
+    dataloader = DataLoader(
+        dataset=tokenized_dataset,
+        batch_size=batch_size,
+        collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    )
 
-#     tokenized_dataset = tokenize_dataset(
-#         sample_data, tokenizer, fields=fields,
-#         tokenizer_kwargs={
-#             "return_attention_mask": False
-#         }
-#     )
-
-#     data_collator = CustomDataCollator(
-#         tokenizer=tokenizer,
-#     )
-#     dataloader = DataLoader(
-#         dataset=tokenized_dataset,
-#         batch_size=16,
-#         collate_fn=data_collator,
-#     )
+    for batch in dataloader:
+        assert "input_ids" in batch
+        assert batch["input_ids"].shape[0] == 2
 
 
-#     for i, batch in enumerate(dataloader):
-#         inputs = batch["input_ids"]
-#         labels = batch["labels"]
+def test_encode_with_template_for_evaluation():
+    batch_size = 16
+    feature_fields = ["goal", "sol1", "sol2"]
+    prompt_template = "Your goal is as follows: {goal}. Pick the option corresponding the right solution.\n(1){sol1}\n(2){sol2}"
+    sample_data = load_dataset_from_files_or_hf(type_or_huggingface_path="ybisk/piqa", trust_remote_code=True, split="test")
+    tokenizer = AutoTokenizer.from_pretrained("state-spaces/mamba-130m-hf")
+    tokenized_dataset = tokenize_dataset_with_prompt_template(
+        tokenizer=tokenizer,
+        prompt_template=prompt_template,
+        dataset=sample_data,
+        feature_fields=feature_fields,
+        apply_chat_template=False
+    )    
+    dataloader = DataLoader(
+        dataset=tokenized_dataset,
+        batch_size=batch_size,
+        collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    )
+
+    smol_data = sample_data.take(batch_size)
+
+    for batch in dataloader:
+        assert "input_ids" in batch
+        assert batch["input_ids"].shape[0] == batch_size
+        decoded = tokenizer.batch_decode(batch["input_ids"], skip_special_tokens=True)
+
+        for item, raw in zip(decoded, smol_data):
+            real = prompt_template.format(**raw)
+            assert real == item
+        
+        break

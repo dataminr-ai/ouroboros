@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import torch
 from datasets import Dataset, Features, IterableDataset, load_dataset
@@ -10,6 +10,8 @@ from transformers import PreTrainedTokenizerBase
 
 random_generator = Generator()
 random_generator = random_generator.manual_seed(2147483647)
+
+__all__ = ["load_dataset_from_files_or_hf", "tokenize_dataset_with_prompt_template", "tokenize_dataset", "chunk_tokenized_dataset"]
 
 
 def load_dataset_from_files_or_hf(
@@ -32,63 +34,57 @@ def load_dataset_from_files_or_hf(
 
     return dataset
 
-def apply_prompt_template_to_example(
+def _tokenize_using_prompt_template(
         tokenizer: PreTrainedTokenizerBase,
-        prompt_template: str,
         example: Dict[str, str],
+        prompt_template: str,
         feature_fields: List[str],
-        label_field: Optional[str] = None, 
         apply_chat_template: bool = True,
-        training: bool = False, 
+        training: bool = False,
+        label_field: str = "label",
         add_generation_prompt: bool = False
     ):
     format_items = {
         f: example[f] for f in feature_fields
     }
-    label = None
-
-    if label_field:
-        label = example[label_field]
 
     prompt = prompt_template.format(**format_items)
-    return_dict = {}
 
     if not apply_chat_template:
-        return_dict["texts"] = prompt
-        if label:
-            return_dict["labels"] = label
+        output = tokenizer(prompt, return_attention_mask=False)
     else:
         chat = [
             {"role": "user", "content": prompt}
         ]
-        if training and label:
+        if training and label_field:
             chat.append(
-                {"role": "assistant", "content": label}
+                {"role": "assistant", "content": str(example[label_field])}
             )
         
-        return_dict["texts"] = tokenizer.apply_chat_template(
+        output = tokenizer.apply_chat_template(
             conversation=chat,
-            tokenize=False,
-            add_generation_prompt=add_generation_prompt
+            tokenize=True,
+            add_generation_prompt=add_generation_prompt,
+            tokenizer_kwargs={
+                "return_attention_mask": False
+            }
         )
-        if label:
-            return_dict["labels"] = label
+    return output
 
-    return return_dict
-
-def apply_prompt_template_to_dataset(
+def tokenize_dataset_with_prompt_template(
         tokenizer: PreTrainedTokenizerBase,
         prompt_template: str, 
         dataset: IterableDataset,
         feature_fields: List[str],
-        label_field: str,
+        label_field: str = "label",
         apply_chat_template: bool = True,
         training: bool = False, 
-        add_generation_prompt: bool = False
+        add_generation_prompt: bool = False,
+        keep_only_relevant_columns: Union[bool, Set[str]] = True,
     ):
-    return (
+    tokenized_dataset =  (
         dataset.map(
-            lambda example: apply_prompt_template_to_example(
+            lambda example: _tokenize_using_prompt_template(
                 tokenizer=tokenizer,
                 prompt_template=prompt_template,
                 example=example,
@@ -98,37 +94,65 @@ def apply_prompt_template_to_dataset(
                 training=training,
                 add_generation_prompt=add_generation_prompt
             )
-            .with_format(format=format)
         )
     )
+    if keep_only_relevant_columns:
+        tokenized_dataset = _select_relevant_columns_from_dataset(
+            tokenized_dataset=tokenized_dataset, 
+            keep_only_relevant_columns=keep_only_relevant_columns,
+            label_field=label_field
+        )
+    return tokenized_dataset
 
-def tokenize_example(tokenizer: PreTrainedTokenizerBase, example: Dict[str, Any], text_field: str = "texts", return_remaining_fields: bool = False):
-    outputs = {}
-    output = tokenizer(example[text_field], return_attention_mask=False, return_tensors="pt")
-    if isinstance(output, Mapping):
-        outputs["input_ids"] = output["input_ids"]
+def _select_relevant_columns_from_dataset(
+        tokenized_dataset: Union[IterableDataset, Dataset], 
+        keep_only_relevant_columns: Union[Set[str], bool] = True, 
+        label_field: str = "label") -> Union[Dataset, IterableDataset]:
+    if isinstance(keep_only_relevant_columns, set):
+        col_names = list(keep_only_relevant_columns)
     else:
-        outputs["input_ids"] = output
+        relevant_columns = {"input_ids", label_field}
+        try:
+            if tokenized_dataset.features:
+                col_names = [col for col in tokenized_dataset.features if col in relevant_columns]
+            else:
+                tokenized_dataset = tokenized_dataset._resolve_features()
+                col_names = [col for col in tokenized_dataset.features if col in relevant_columns]
+        except Exception:
+            raise RuntimeError(
+                "Inferring relevant column names for Dataset, "
+                "set relevant_columns manually using keep_only_relevant_columns"
+            )
 
-    if return_remaining_fields:
-        for key in example.keys():
-            if key == text_field:
-                continue
-            if key not in outputs:
-                outputs[key] = example[key]
-    return outputs
-
-
-def tokenize_dataset(tokenizer: PreTrainedTokenizerBase, dataset: Dataset, text_field: str = "texts", return_remaining_fields: bool = False):
-    dataset = dataset.map(
-        lambda example: tokenize_example(
-            tokenizer=tokenizer,
-            example=example,
-            text_field=text_field,
-            return_remaining_fields=return_remaining_fields
-        ),
+    tokenized_dataset = tokenized_dataset.select_columns(
+        column_names=col_names
     )
-    return dataset
+    return tokenized_dataset
+
+def tokenize_dataset(
+        tokenizer: PreTrainedTokenizerBase,
+        dataset: IterableDataset, 
+        input_field: str = "text",
+        label_field: str = "label", 
+        keep_only_relevant_columns: Union[bool, Set[str]] = True,
+    ):
+    tokenized_dataset = dataset.map(
+        lambda example: tokenizer(example[input_field], return_attention_mask=False)
+    )
+
+    if keep_only_relevant_columns:
+        tokenized_dataset = _select_relevant_columns_from_dataset(
+            tokenized_dataset=tokenized_dataset, 
+            keep_only_relevant_columns=keep_only_relevant_columns,
+            label_field=label_field
+        )
+    return tokenized_dataset
+
+def chunk_tokenized_dataset(dataset: Dataset, pad_token_id: int, input_field: str = "input_ids", chunk_size: Union[Optional[int], Tuple[int, int]] = 4):
+    chunked_dataset = dataset.map(
+        lambda example: _chunk_example(example, pad_token_id=pad_token_id, field_name=input_field, chunk_size=chunk_size)
+    )
+    return chunked_dataset
 
 
 def _chunk_tensor(tensor: torch.Tensor, pad_token_id: int, chunk_size: Union[Optional[int], Tuple[int, int]] = 4):
@@ -146,38 +170,10 @@ def _chunk_tensor(tensor: torch.Tensor, pad_token_id: int, chunk_size: Union[Opt
     tensor = pad(input=tensor, pad=(0, right_padding), mode="constant", value=pad_token_id)
     return tensor.reshape(1, -1, chunk_size)
 
-def chunk_example(item: Dict[str, Any], pad_token_id: int, field_name: Union[str, List[str]], chunk_field_name: str = "input_ids", chunk_size: Union[Optional[int], Tuple[int, int]] = 4) -> torch.Tensor:
+def _chunk_example(item: Dict[str, Any], pad_token_id: int, field_name: str, chunk_size: Union[Optional[int], Tuple[int, int]] = 4) -> torch.Tensor:
     outputs = {}
-    if isinstance(field_name, str):
-        example = item[field_name]
-        if isinstance(example, Mapping):
-            example = example[chunk_field_name]
-        outputs[field_name] = _chunk_tensor(example, pad_token_id=pad_token_id, chunk_size=chunk_size)
-    else:
-        for field in field_name:
-            outputs[field] = chunk_example(item, pad_token_id=pad_token_id, field_name=field, chunk_size=chunk_size).get(field)
+    example = item[field_name]
+    if isinstance(example, Mapping):
+        example = example[field_name]
+    outputs[field_name] = _chunk_tensor(example, pad_token_id=pad_token_id, chunk_size=chunk_size)
     return outputs
-
-
-def tokenize_and_chunk_dataset(dataset: Dataset, tokenizer: PreTrainedTokenizerBase, 
-                               tokenizer_fields: List[str], chunk_field_name: str = "input_ids",
-                               chunk_size: Union[Optional[int], Tuple[int, int]] = 4, 
-                               return_tensors: str = "pt", tokenizer_kwargs: Dict[str, Any] = {}, 
-                               dataset_kwargs: Dict[str, Any]= {}):
-    dataset = dataset.with_transform(
-        lambda item: chunk_example(
-                item=tokenize_example(
-                    tokenizer=tokenizer,
-                    example=item,
-                    fields=tokenizer_fields,
-                    return_tensors=return_tensors,
-                    **tokenizer_kwargs
-                ),
-                field_name=tokenizer_fields,
-                chunk_field_name=chunk_field_name,
-                pad_token_id=tokenizer.pad_token_id,
-                chunk_size=chunk_size,
-            ),
-        **dataset_kwargs
-    )
-    return dataset
