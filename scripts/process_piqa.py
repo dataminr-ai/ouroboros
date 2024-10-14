@@ -2,12 +2,12 @@ import datasets
 
 
 def prepare(x):
-    inputs = f'Question:\n{x["goal"]}\nA. {x["sol1"]}\nB. {x["sol2"]}\nAnswer: '
+    inputs = f'Question:\n{x["goal"]}\nA. {x["sol1"]}\nB. {x["sol2"]}\nAnswer:\n'
     label_str = "AB"[x["label"]]
     correct_sol = [x["sol1"], x["sol2"]][x["label"]]
     incorrect_sol = [x["sol1"], x["sol2"]][1 - x["label"]]
-    positive = f'Question: {x["goal"]}\nAnswer: {correct_sol}'
-    negative = f'Question: {x["goal"]}\nAnswer: {incorrect_sol}'
+    positive = f'Question:\n{x["goal"]}\nAnswer:\n{correct_sol}'
+    negative = f'Question:\n{x["goal"]}\nAnswer:\n{incorrect_sol}'
     return {
         "inputs": inputs,
         "label_str": label_str,
