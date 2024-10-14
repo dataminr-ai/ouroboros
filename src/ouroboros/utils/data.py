@@ -155,7 +155,9 @@ def chunk_tokenized_dataset(dataset: Dataset, pad_token_id: int, input_field: st
     return chunked_dataset
 
 
-def _chunk_tensor(tensor: torch.Tensor, pad_token_id: int, chunk_size: Union[Optional[int], Tuple[int, int]] = 4):
+def _chunk_tensor(tensor: Union[torch.Tensor, List[int]], pad_token_id: int, chunk_size: Union[Optional[int], Tuple[int, int]] = 4):
+    if isinstance(tensor, list):
+        tensor = torch.tensor(tensor, requires_grad=False)
     assert isinstance(tensor, torch.Tensor), f"Invalid type for tensor object: {type(tensor)}"
     assert len(tensor.shape) <= 2, f"Assumed input should be of maximum 2 dimensions, got input of shape {tensor.shape}"
     if len(tensor.shape) == 2:
@@ -168,7 +170,7 @@ def _chunk_tensor(tensor: torch.Tensor, pad_token_id: int, chunk_size: Union[Opt
         chunk_size = torch.randint(low=chunk_size[0], high=chunk_size[1], size=(1,), generator=random_generator, dtype=torch.int32).item()
     right_padding = chunk_size - (tensor.shape[-1] % chunk_size)
     tensor = pad(input=tensor, pad=(0, right_padding), mode="constant", value=pad_token_id)
-    return tensor.reshape(1, -1, chunk_size)
+    return tensor.reshape(-1, chunk_size)
 
 def _chunk_example(item: Dict[str, Any], pad_token_id: int, field_name: str, chunk_size: Union[Optional[int], Tuple[int, int]] = 4) -> torch.Tensor:
     outputs = {}

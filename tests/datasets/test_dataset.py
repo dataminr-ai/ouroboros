@@ -72,7 +72,7 @@ def test_tokenized_dataload_for_lm():
 
 
 def test_encode_with_template_for_evaluation():
-    batch_size = 16
+    batch_size = 4
     feature_fields = ["goal", "sol1", "sol2"]
     prompt_template = "Your goal is as follows: {goal}. Pick the option corresponding the right solution.\n(1){sol1}\n(2){sol2}"
     sample_data = load_dataset_from_files_or_hf(type_or_huggingface_path="ybisk/piqa", trust_remote_code=True, split="test")
@@ -90,15 +90,17 @@ def test_encode_with_template_for_evaluation():
         collate_fn=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     )
 
-    smol_data = sample_data.take(batch_size)
+    smol_data = list(sample_data.take(batch_size * 4))
 
-    for batch in dataloader:
+    for i, batch in enumerate(dataloader):
         assert "input_ids" in batch
         assert batch["input_ids"].shape[0] == batch_size
         decoded = tokenizer.batch_decode(batch["input_ids"], skip_special_tokens=True)
 
-        for item, raw in zip(decoded, smol_data):
+        for idx, item in enumerate(decoded):
+            raw = smol_data[i*batch_size + idx]
             real = prompt_template.format(**raw)
             assert real == item
         
-        break
+        if i == 3:
+            break
