@@ -296,7 +296,8 @@ def main():
     logger.info(model.config.to_dict())
     logger.info(model)
     model.train()
-    model.to(args.device)
+    model.to(args.device, dtype=torch.bfloat16)
+    model.gradient_checkpointing_enable()
 
     encoder = AutoModelForCausalLM.from_pretrained(
         args.encoder,
@@ -304,7 +305,7 @@ def main():
         trust_remote_code=args.trust_remote_code,
     )
     encoder.eval()
-    encoder.to(args.device)
+    encoder.to(args.device, dtype=torch.bfloat16)
 
     # Load Dataset
     raw_dataset = ed.read_dataset(args.train_file)

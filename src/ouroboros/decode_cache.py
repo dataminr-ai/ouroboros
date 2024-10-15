@@ -77,6 +77,13 @@ def main():
         help="Maximum tokens to reconstruct",
     )
 
+    parser.add_argument(
+        "--validation_limit",
+        type=int,
+        default=-1,
+        help="Limits the number of validation batches (for development)",
+    )
+
     args = parser.parse_args()
 
     # Reconstructor
