@@ -132,3 +132,4 @@ venv
 *.jsonl
 
 data
+cache
