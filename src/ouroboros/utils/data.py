@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import torch
@@ -11,7 +12,7 @@ from transformers import PreTrainedTokenizerBase
 random_generator = Generator()
 random_generator = random_generator.manual_seed(2147483647)
 
-__all__ = ["load_dataset_from_files_or_hf", "tokenize_dataset_with_prompt_template", "tokenize_dataset", "chunk_tokenized_dataset"]
+__all__ = ["load_dataset_from_files_or_hf", "tokenize_dataset", "chunk_tokenized_dataset"]
 
 
 def load_dataset_from_files_or_hf(
@@ -19,7 +20,9 @@ def load_dataset_from_files_or_hf(
         filepaths: Optional[Union[str, List[str], Dict[str, Union[str, List[str]]]]] = None, 
         split: Optional[str] = None,
         streaming: bool = True,
-        features: Optional[Dict[str, Any]] = None, **kwargs
+        features: Optional[Dict[str, Any]] = None, 
+        cache_dir: Optional[str] = str(Path.cwd() / "cache"),
+        **kwargs
     ):
     if features:
         features = Features.from_dict(features)
@@ -29,124 +32,55 @@ def load_dataset_from_files_or_hf(
         split=split,
         streaming=streaming,
         features=features,
+        cache_dir=cache_dir,
         **kwargs
     )
 
     return dataset
 
-def _tokenize_using_prompt_template(
-        tokenizer: PreTrainedTokenizerBase,
-        example: Dict[str, str],
-        prompt_template: str,
-        feature_fields: List[str],
-        apply_chat_template: bool = True,
-        training: bool = False,
-        label_field: str = "label",
-        add_generation_prompt: bool = False
-    ):
-    format_items = {
-        f: example[f] for f in feature_fields
-    }
-
-    prompt = prompt_template.format(**format_items)
-
-    if not apply_chat_template:
-        output = tokenizer(prompt, return_attention_mask=False)
-    else:
-        chat = [
-            {"role": "user", "content": prompt}
-        ]
-        if training and label_field:
-            chat.append(
-                {"role": "assistant", "content": str(example[label_field])}
-            )
-        
-        output = tokenizer.apply_chat_template(
-            conversation=chat,
-            tokenize=True,
-            add_generation_prompt=add_generation_prompt,
-            tokenizer_kwargs={
-                "return_attention_mask": False
-            }
-        )
-    return output
-
-def tokenize_dataset_with_prompt_template(
-        tokenizer: PreTrainedTokenizerBase,
-        prompt_template: str, 
-        dataset: IterableDataset,
-        feature_fields: List[str],
-        label_field: str = "label",
-        apply_chat_template: bool = True,
-        training: bool = False, 
-        add_generation_prompt: bool = False,
-        keep_only_relevant_columns: Union[bool, Set[str]] = True,
-    ):
-    tokenized_dataset =  (
-        dataset.map(
-            lambda example: _tokenize_using_prompt_template(
-                tokenizer=tokenizer,
-                prompt_template=prompt_template,
-                example=example,
-                feature_fields=feature_fields,
-                label_field=label_field,
-                apply_chat_template=apply_chat_template,
-                training=training,
-                add_generation_prompt=add_generation_prompt
-            )
-        )
+def apply_prompt_to_dataset(dataset: Dataset, prompt: str):
+    dataset.map(
+        lambda example: {
+            "inputs": prompt + example["inputs"]
+        }
     )
-    if keep_only_relevant_columns:
-        tokenized_dataset = _select_relevant_columns_from_dataset(
-            tokenized_dataset=tokenized_dataset, 
-            keep_only_relevant_columns=keep_only_relevant_columns,
-            label_field=label_field
-        )
-    return tokenized_dataset
 
-def _select_relevant_columns_from_dataset(
-        tokenized_dataset: Union[IterableDataset, Dataset], 
-        keep_only_relevant_columns: Union[Set[str], bool] = True, 
-        label_field: str = "label") -> Union[Dataset, IterableDataset]:
-    if isinstance(keep_only_relevant_columns, set):
-        col_names = list(keep_only_relevant_columns)
-    else:
-        relevant_columns = {"input_ids", label_field}
-        try:
-            if tokenized_dataset.features:
-                col_names = [col for col in tokenized_dataset.features if col in relevant_columns]
-            else:
-                tokenized_dataset = tokenized_dataset._resolve_features()
-                col_names = [col for col in tokenized_dataset.features if col in relevant_columns]
-        except Exception:
-            raise RuntimeError(
-                "Inferring relevant column names for Dataset, "
-                "set relevant_columns manually using keep_only_relevant_columns"
-            )
-
-    tokenized_dataset = tokenized_dataset.select_columns(
-        column_names=col_names
+def tokenize_example(example: Dict[str, Any], tokenizer: PreTrainedTokenizerBase, label_pad_token_id: int = -100, training: bool = False):
+    tokenized_inputs = tokenizer(
+        example["inputs"],
+        return_attention_mask=False
     )
-    return tokenized_dataset
+    tokenized_label = None
+    if "label_str" in example:
+        tokenized_label = tokenizer(
+            example["label_str"],
+            return_attention_mask=False,
+        )
+    
+    if training and tokenized_label:
+        input_ids = tokenized_inputs["input_ids"] + tokenized_label["input_ids"]
+        labels = [label_pad_token_id] * len(tokenized_inputs["input_ids"]) + tokenized_label["input_ids"]
+    else:
+        input_ids = tokenized_inputs["input_ids"]
+        labels = tokenized_label["input_ids"] if tokenized_label else None
+
+    return {"input_ids": input_ids, "labels": labels}
 
 def tokenize_dataset(
         tokenizer: PreTrainedTokenizerBase,
-        dataset: IterableDataset, 
-        input_field: str = "text",
-        label_field: str = "label", 
-        keep_only_relevant_columns: Union[bool, Set[str]] = True,
+        dataset: IterableDataset,
+        training: bool = False,
+        contrastive: bool = False,
     ):
     tokenized_dataset = dataset.map(
-        lambda example: tokenizer(example[input_field], return_attention_mask=False)
+        lambda example: tokenize_example(tokenizer=tokenizer, example=example, training=training)
     )
-
-    if keep_only_relevant_columns:
-        tokenized_dataset = _select_relevant_columns_from_dataset(
-            tokenized_dataset=tokenized_dataset, 
-            keep_only_relevant_columns=keep_only_relevant_columns,
-            label_field=label_field
-        )
+    if contrastive:
+        tokenized_dataset = tokenized_dataset.select_columns(["input_ids", "positive", "negative"])
+    if not contrastive:
+        tokenized_dataset = tokenized_dataset.select_columns(["input_ids", "labels"])
     return tokenized_dataset
+
 
 def chunk_tokenized_dataset(dataset: Dataset, pad_token_id: int, input_field: str = "input_ids", chunk_size: Union[Optional[int], Tuple[int, int]] = 4):
     chunked_dataset = dataset.map(
