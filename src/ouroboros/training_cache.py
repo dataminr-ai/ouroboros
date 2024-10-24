@@ -23,7 +23,6 @@ https://huggingface.co/models?filter=text-generation
 # You can also adapt this script on your own causal language modeling task. Pointers for this are left as comments.
 
 import argparse
-import json
 import logging
 import math
 import os
@@ -36,6 +35,7 @@ from transformers import (
     MODEL_MAPPING,
     AutoModelForCausalLM,
     AutoTokenizer,
+    DataCollatorForSeq2Seq,
     SchedulerType,
     get_scheduler,
 )
@@ -43,13 +43,14 @@ from transformers.cache_utils import MambaCache
 from transformers.models.mamba import MambaConfig
 from transformers.models.mamba.modeling_mamba import is_fast_path_available
 
-import ouroboros.encode_dataset as ed
 from ouroboros.decode_cache import reconstruct
 from ouroboros.models import (
     MambaDecoderConfig,
     MambaDecoderForCausalLM,
     TrainableMambaCache,
 )
+from ouroboros.utils.data import load_dataset_from_files_or_hf, tokenize_dataset
+from ouroboros.utils.model import get_cache_state_for_batch, save_checkpoint
 
 
 AutoModelForCausalLM.register(MambaDecoderConfig, MambaDecoderForCausalLM)
@@ -241,62 +242,6 @@ def parse_args():
     return args
 
 
-def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
-    os.makedirs(checkpoint_path, exist_ok=True)
-    checkpoint_path = os.path.join(checkpoint_path, "training_state.bin")
-    checkpoint = {
-        "epoch": epoch,
-        "step": step,
-        "optimizer_state_dict": optimizer.state_dict(),
-        "scheduler_state_dict": scheduler.state_dict(),
-        "model_state_dict": model.state_dict(),
-    }
-    torch.save(checkpoint, checkpoint_path)
-    logging.info(f"Checkpoint saved at epoch {epoch}, step {step}")
-
-
-def load_dataset(file_path):
-    dataset = []
-    with open(file_path, "r") as file:
-        for line in file:
-            dataset.append(json.loads(line))
-    return dataset
-
-
-def tokenize_example(example, tokenizer):
-    tokenized_inputs = tokenizer(
-        example["inputs"],
-        return_attention_mask=False,
-    )
-    tokenized_label = tokenizer(
-        example["label_str"],
-        return_attention_mask=False,
-    )
-    input_ids = tokenized_inputs["input_ids"] + tokenized_label["input_ids"]
-    labels = [-100] * len(tokenized_inputs["input_ids"]) + tokenized_label["input_ids"]
-    return {"input_ids": input_ids, "labels": labels}
-
-
-def collate_fn(x, max_len=200):
-    # NOTE(rlogan): This is slow but correct
-    # TODO: Make the max size configurable instead of 128
-    max_seq_len = min(max(len(x_["input_ids"]) for x_ in x), max_len)
-    batch_size = len(x)
-
-    input_ids = torch.zeros((batch_size, max_seq_len), dtype=torch.int64)
-    for i, x_ in enumerate(x):
-        input_ids[i, : len(x_["input_ids"])] = torch.tensor(x_["input_ids"])[
-            :max_seq_len
-        ]
-    labels = torch.full((batch_size, max_seq_len), fill_value=-100, dtype=torch.int64)
-    for i, x_ in enumerate(x):
-        labels[i, : len(x_["labels"])] = torch.tensor(x_["labels"])[:max_seq_len]
-    return {
-        "input_ids": input_ids,
-        "labels": labels,
-    }
-
-
 def main():
     args = parse_args()
 
@@ -319,14 +264,21 @@ def main():
     model.train()
 
     # Load Dataset
-    dataset = load_dataset(args.train_file)
-    dataset = [tokenize_example(example, tokenizer) for example in dataset]
+    dataset = load_dataset_from_files_or_hf(
+        filepaths={
+            "train": args.train_file
+        },
+        split="train",
+    )
+    tokenized_dataset = tokenize_dataset(
+        tokenizer=tokenizer, dataset=dataset, training=True
+    )
 
     train_loader = DataLoader(
-        dataset,
+        tokenized_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        collate_fn=lambda batch: collate_fn(batch, args.max_seq_len),
+        collate_fn=DataCollatorForSeq2Seq(tokenizer=tokenizer, max_length=args.max_seq_len),
     )
 
     summary_writer = SummaryWriter(log_dir=args.output_dir)
@@ -336,7 +288,7 @@ def main():
         prompt = ["Pick the best option that answers the question.\n"]
         token_prompt = tokenizer(prompt, return_tensors="pt").to(args.device)
         with torch.no_grad():
-            encoded_prompt = ed.get_cache_params(token_prompt["input_ids"], model)
+            encoded_prompt = get_cache_state_for_batch(token_prompt["input_ids"], model)
         learned_conv_state = encoded_prompt.conv_states
         learned_ssm_state = encoded_prompt.ssm_states
     else:
@@ -421,7 +373,7 @@ def main():
                                 decoder, tokenizer, learned_cache_params
                             ).to(args.device)
                             with torch.no_grad():
-                                recon_cache_params = ed.get_cache_params(
+                                recon_cache_params = get_cache_state_for_batch(
                                     decoded_cache, model
                                 )
 
@@ -463,17 +415,22 @@ def main():
                             if args.output_dir is not None:
                                 output_dir = os.path.join(args.output_dir, output_dir)
                             save_checkpoint(
-                                encoder_cache_params,
-                                optimizer,
-                                lr_scheduler,
-                                epoch,
-                                step,
-                                output_dir,
+                                model=encoder_cache_params,
+                                optimizer=optimizer,
+                                scheduler=lr_scheduler,
+                                epoch=epoch,
+                                step=step,
+                                checkpoint_path=output_dir,
                             )
                             # TODO(rlogan): Add eval
     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
     save_checkpoint(
-        encoder_cache_params, optimizer, lr_scheduler, epoch, step, output_dir
+        model=encoder_cache_params,
+        optimizer=optimizer,
+        scheduler=lr_scheduler,
+        epoch=epoch,
+        step=step,
+        checkpoint_path=output_dir,
     )
 
 

@@ -31,7 +31,4 @@ RUN pyenv global 3.10.13
 
 ## Setup env
 RUN pip install build wheel torch==2.3.1
-RUN pip install -e ".[fast]"
-
-
 ENTRYPOINT ["/bin/bash"]
