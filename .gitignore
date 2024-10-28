@@ -133,3 +133,6 @@ venv
 
 data
 cache
+ckpt 
+models
+commands.sh
