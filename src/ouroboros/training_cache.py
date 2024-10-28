@@ -23,8 +23,6 @@ https://huggingface.co/models?filter=text-generation
 # You can also adapt this script on your own causal language modeling task. Pointers for this are left as comments.
 
 import argparse
-import functools
-import json
 import logging
 import math
 import os
@@ -52,7 +50,11 @@ from ouroboros.models import (
     MambaDecoderForCausalLM,
     TrainableMambaCache,
 )
-from ouroboros.utils.data import load_dataset_from_files_or_hf, tokenize_dataset
+from ouroboros.utils.data import (
+    DataCollatorForContrastiveLMTraining,
+    load_dataset_from_files_or_hf,
+    tokenize_dataset,
+)
 from ouroboros.utils.model import get_cache_state_for_batch, save_checkpoint
 
 
@@ -247,100 +249,6 @@ def parse_args():
     return args
 
 
-def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
-    os.makedirs(checkpoint_path, exist_ok=True)
-    checkpoint_path = os.path.join(checkpoint_path, "training_state.bin")
-    checkpoint = {
-        "epoch": epoch,
-        "step": step,
-        "optimizer_state_dict": optimizer.state_dict(),
-        "scheduler_state_dict": scheduler.state_dict(),
-        "model_state_dict": model.state_dict(),
-    }
-    torch.save(checkpoint, checkpoint_path)
-    logging.info(f"Checkpoint saved at epoch {epoch}, step {step}")
-
-
-def load_dataset(file_path):
-    dataset = []
-    with open(file_path, "r") as file:
-        for line in file:
-            dataset.append(json.loads(line))
-    return dataset
-
-
-def tokenize_example(example, tokenizer, add_eos=False):
-    tokenized_inputs = tokenizer(
-        example["inputs"],
-        return_attention_mask=False,
-    )
-    tokenized_label = tokenizer(
-        example["label_str"],
-        return_attention_mask=False,
-    )
-    if add_eos:
-        tokenized_label["input_ids"] += [tokenizer.eos_token_id]
-    input_ids = tokenized_inputs["input_ids"] + tokenized_label["input_ids"]
-    labels = [-100] * len(tokenized_inputs["input_ids"]) + tokenized_label["input_ids"]
-    return {"input_ids": input_ids, "labels": labels}
-
-
-def contrastive_tokenize_example(example, tokenizer):
-    positive_input_ids = tokenizer(
-        example["positive"],
-        return_attention_mask=False,
-    )["input_ids"]
-    negative_input_ids = tokenizer(
-        example["negative"],
-        return_attention_mask=False,
-    )["input_ids"]
-    return {
-        "positive_input_ids": positive_input_ids,
-        "negative_input_ids": negative_input_ids,
-    }
-
-
-def collate_fn(x, max_len=200):
-    # NOTE(rlogan): This is slow but correct
-    # TODO: Make the max size configurable instead of 128
-    max_seq_len = min(max(len(x_["input_ids"]) for x_ in x), max_len)
-    batch_size = len(x)
-
-    input_ids = torch.zeros((batch_size, max_seq_len), dtype=torch.int64)
-    for i, x_ in enumerate(x):
-        input_ids[i, : len(x_["input_ids"])] = torch.tensor(x_["input_ids"])[
-            :max_seq_len
-        ]
-    labels = torch.full((batch_size, max_seq_len), fill_value=-100, dtype=torch.int64)
-    for i, x_ in enumerate(x):
-        labels[i, : len(x_["labels"])] = torch.tensor(x_["labels"])[:max_seq_len]
-    return {
-        "input_ids": input_ids,
-        "labels": labels,
-    }
-
-
-def contrastive_collate_fn(x, max_len=200):
-    max_positive_len = min(max(len(x_["positive_input_ids"]) for x_ in x), max_len)
-    max_negative_len = min(max(len(x_["negative_input_ids"]) for x_ in x), max_len)
-    batch_size = len(x)
-
-    positive_input_ids = torch.zeros((batch_size, max_positive_len), dtype=torch.int64)
-    for i, x_ in enumerate(x):
-        positive_input_ids[i, : len(x_["positive_input_ids"])] = torch.tensor(
-            x_["positive_input_ids"]
-        )[:max_positive_len]
-    negative_input_ids = torch.zeros((batch_size, max_negative_len), dtype=torch.int64)
-    for i, x_ in enumerate(x):
-        negative_input_ids[i, : len(x_["negative_input_ids"])] = torch.tensor(
-            x_["negative_input_ids"]
-        )[:max_negative_len]
-
-    return {
-        "positive_input_ids": positive_input_ids,
-        "negative_input_ids": negative_input_ids,
-    }
-
 
 def main():
     args = parse_args()
@@ -366,32 +274,47 @@ def main():
     model.train()
 
     # Load Dataset
-    if args.contrastive:
-        tokenize_fn = contrastive_tokenize_example
-        collate_fn_ = contrastive_collate_fn
-    else:
-        tokenize_fn = functools.partial(tokenize_example, add_eos=args.add_eos)
-        collate_fn_ = collate_fn
-    dataset = load_dataset(args.train_file)
-    dataset = [tokenize_fn(example, tokenizer) for example in dataset]
+    files = {
+        "train": args.train_file
+    }
+    if args.validation_file:
+        files["validation"] = args.validation_file
 
+    dataset = load_dataset_from_files_or_hf(
+        filepaths=files
+    )
+
+    tokenized_train_dataset = tokenize_dataset(
+        tokenizer=tokenizer,
+        dataset=dataset["train"],
+        contrastive=args.contrastive,
+        training=True,
+        add_eos=args.add_eos
+    )
     train_loader = DataLoader(
-        tokenized_dataset,
+        dataset=tokenized_train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        collate_fn=lambda batch: collate_fn_(batch, args.max_seq_len),
+        collate_fn=DataCollatorForSeq2Seq(tokenizer=tokenizer) if not args.contrastive else DataCollatorForContrastiveLMTraining(tokenizer=tokenizer)
     )
 
     if args.validation_file:
-        validation_dataset = load_dataset(args.validation_file)
-        validation_dataset = [
-            tokenize_fn(example, tokenizer) for example in validation_dataset
-        ]
+        tokenized_validation_dataset = tokenize_dataset(
+            tokenizer=tokenizer,
+            dataset=dataset["validation"],
+            contrastive=args.contrastive,
+            training=True,
+            add_eos=args.add_eos
+        )
         valid_loader = DataLoader(
-            validation_dataset,
+            dataset=tokenized_validation_dataset,
             batch_size=args.batch_size,
             shuffle=True,
-            collate_fn=lambda batch: collate_fn_(batch, args.max_seq_len),
+            collate_fn=(
+                DataCollatorForSeq2Seq(tokenizer=tokenizer) 
+                if not args.contrastive 
+                else DataCollatorForContrastiveLMTraining(tokenizer=tokenizer)
+            )
         )
 
     # Initialize cache
@@ -476,7 +399,7 @@ def main():
                 args.device
             )
             with torch.no_grad():
-                recon_cache_params = ed.get_cache_params(decoded_cache, model)
+                recon_cache_params = get_cache_state_for_batch(decoded_cache, model)
 
             # define distance function
             ssm_dist = torch.norm(

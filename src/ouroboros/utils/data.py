@@ -1,12 +1,15 @@
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 from datasets import Dataset, Features, IterableDataset, load_dataset
 from torch import Generator
 from torch.nn.functional import pad
 from transformers import PreTrainedTokenizerBase
+from transformers.data.data_collator import pad_without_fast_tokenizer_warning
+from transformers.utils import PaddingStrategy
 
 
 random_generator = Generator()
@@ -45,17 +48,20 @@ def apply_prompt_to_dataset(dataset: Dataset, prompt: str):
         }
     )
 
-def tokenize_example(example: Dict[str, Any], tokenizer: PreTrainedTokenizerBase, label_pad_token_id: int = -100, training: bool = False):
+def tokenize_example(example: Dict[str, Any], tokenizer: PreTrainedTokenizerBase, label_pad_token_id: int = -100, add_eos: bool = False, training: bool = False):
     tokenized_inputs = tokenizer(
         example["inputs"],
         return_attention_mask=False
     )
+    
     tokenized_label = None
     if "label_str" in example:
         tokenized_label = tokenizer(
             example["label_str"],
             return_attention_mask=False,
         )
+        if add_eos:
+            tokenized_label["input_ids"] += [tokenizer.eos_token_id]
     
     if training and tokenized_label:
         input_ids = tokenized_inputs["input_ids"] + tokenized_label["input_ids"]
@@ -66,18 +72,37 @@ def tokenize_example(example: Dict[str, Any], tokenizer: PreTrainedTokenizerBase
 
     return {"input_ids": input_ids, "labels": labels}
 
+def tokenize_example_for_contrastive_task(example: Dict[str, Any], tokenizer: PreTrainedTokenizerBase):
+    positive_input_ids = tokenizer(
+        example["positive"],
+        return_attention_mask=False
+    )["input_ids"]
+    negative_input_ids = tokenizer(
+        example["negative"],
+        return_attention_mask=False
+    )["input_ids"]
+    return {
+        "positive_input_ids": positive_input_ids,
+        "negative_input_ids": negative_input_ids,
+    }
+
+
 def tokenize_dataset(
         tokenizer: PreTrainedTokenizerBase,
         dataset: IterableDataset,
         training: bool = False,
         contrastive: bool = False,
+        add_eos: bool = False
     ):
-    tokenized_dataset = dataset.map(
-        lambda example: tokenize_example(tokenizer=tokenizer, example=example, training=training)
-    )
     if contrastive:
-        tokenized_dataset = tokenized_dataset.select_columns(["input_ids", "positive", "negative"])
-    if not contrastive:
+        tokenized_dataset = dataset.map(
+            lambda example: tokenize_example_for_contrastive_task(tokenizer=tokenizer, example=example)
+        )
+        tokenized_dataset = tokenized_dataset.select_columns(["positive_input_ids", "negative_input_ids"])
+    else:
+        tokenized_dataset = dataset.map(
+            lambda example: tokenize_example(tokenizer=tokenizer, example=example, training=training, add_eos=add_eos)
+        )
         tokenized_dataset = tokenized_dataset.select_columns(["input_ids", "labels"])
     return tokenized_dataset
 
@@ -113,3 +138,32 @@ def _chunk_example(item: Dict[str, Any], pad_token_id: int, field_name: str, chu
         example = example[field_name]
     outputs[field_name] = _chunk_tensor(example, pad_token_id=pad_token_id, chunk_size=chunk_size)
     return outputs
+
+
+@dataclass
+class DataCollatorForContrastiveLMTraining:
+    tokenizer: PreTrainedTokenizerBase
+    input_columns: List[str] = field(default_factory=lambda: ["positive_input_ids", "negative_input_ids"])
+    padding: Union[bool, str, PaddingStrategy] = True
+    max_length: Optional[int] = None
+    pad_to_multiple_of: Optional[int] = None
+    return_tensors: str = "pt"
+
+    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
+        batch = {}
+        original_model_inputs = self.tokenizer.model_input_names
+        for input_col in self.input_columns:
+            self.tokenizer.model_input_names = [input_col]
+            input_batch = pad_without_fast_tokenizer_warning(
+                self.tokenizer,
+                [{input_col: feature[input_col]} for feature in features],
+                padding=self.padding,
+                max_length=self.max_length,
+                pad_to_multiple_of=self.pad_to_multiple_of,
+                return_tensors=self.return_tensors,
+            )
+            batch[input_col] = input_batch[input_col]
+
+        self.tokenizer.model_input_names = original_model_inputs
+        
+        return batch
