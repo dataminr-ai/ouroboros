@@ -281,7 +281,8 @@ def main():
         files["validation"] = args.validation_file
 
     dataset = load_dataset_from_files_or_hf(
-        filepaths=files
+        filepaths=files,
+        streaming=False
     )
 
     tokenized_train_dataset = tokenize_dataset(
@@ -295,7 +296,11 @@ def main():
         dataset=tokenized_train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        collate_fn=DataCollatorForSeq2Seq(tokenizer=tokenizer) if not args.contrastive else DataCollatorForContrastiveLMTraining(tokenizer=tokenizer)
+        collate_fn=(
+            DataCollatorForSeq2Seq(tokenizer=tokenizer)
+            if not args.contrastive else
+            DataCollatorForContrastiveLMTraining(tokenizer=tokenizer)
+        )
     )
 
     if args.validation_file:

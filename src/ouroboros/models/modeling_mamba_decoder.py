@@ -26,6 +26,7 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 from transformers.activations import ACT2FN
 from transformers.cache_utils import MambaCache
+from transformers.generation.utils import GenerationMixin
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import (
     ModelOutput,
@@ -278,7 +279,7 @@ class MambaDecoderPreTrainedModel(PreTrainedModel):
 
     config_class = MambaDecoderConfig
     base_model_prefix = "backbone"
-    _no_split_modules = ["MambaDecoderBlock"]
+    _no_split_modules = ["MambaDecoderBlock", "MambaDecoderMixer"]
     supports_gradient_checkpointing = True
     _is_stateful = True
 
@@ -585,7 +586,7 @@ class MambaDecoderModel(MambaDecoderPreTrainedModel):
     """,
     MAMBA_START_DOCSTRING,
 )
-class MambaDecoderForCausalLM(MambaDecoderPreTrainedModel):
+class MambaDecoderForCausalLM(MambaDecoderPreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):

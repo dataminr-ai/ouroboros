@@ -54,8 +54,20 @@ def load_checkpoint(checkpoint_path: PathLike, ModelClass: Type[PreTrainedModel]
 
 def get_cache_state_for_batch(batch: torch.Tensor, model: PreTrainedModel) -> torch.Tensor:
     outputs = model(batch, output_hidden_states=True, use_cache=True, return_dict=True)
-    hidden_states = outputs.cache_params
-    return hidden_states
+    encoder_cache_params = None
+    if hasattr(outputs, "encoder_cache_params"):
+        encoder_cache_params = outputs.encoder_cache_params
+    cache_params = outputs.cache_params
+
+    assert (encoder_cache_params is None) or (cache_params is None), "Cannot have both encoder_cache_params and cache_params at the same time"
+
+    if encoder_cache_params is None:
+        return cache_params
+
+    if cache_params is None:
+        return encoder_cache_params
+        
+    return None
 
 
 def move_cache_to_device(mamba_cache: MambaCache, device: torch.device) -> MambaCache:
