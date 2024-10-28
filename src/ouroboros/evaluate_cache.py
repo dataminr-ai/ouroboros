@@ -5,8 +5,9 @@ import os
 import torch
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
+from transformers.cache_utils import MambaCache
 
-from ouroboros.models import MambaDecoderForCausalLM
+from ouroboros.models import MambaDecoderForCausalLM, TrainableMambaCache
 
 
 def load_dataset(file_path):
@@ -32,15 +33,13 @@ def tokenize_example(example, tokenizer):
         example["label_str"],
         return_attention_mask=False,
     )
-    input_ids = tokenized_inputs["input_ids"]
-    labels = tokenized_label["input_ids"]
+    input_ids = tokenized_inputs["input_ids"] 
+    labels = [-100] * len(tokenized_inputs["input_ids"]) + tokenized_label["input_ids"]
     return {"input_ids": input_ids, "labels": labels}
 
 
-def collate_fn(x):
-    # NOTE(rlogan): This is slow but correct
-    # TODO: Make the max size configurable instead of 128
-    max_seq_len = max(len(x_["input_ids"]) for x_ in x)
+def collate_fn(x, max_len=200):
+    max_seq_len = min(max(len(x_["labels"]) for x_ in x), max_len)
     batch_size = len(x)
 
     input_ids = torch.zeros((batch_size, max_seq_len), dtype=torch.int64)
@@ -48,14 +47,59 @@ def collate_fn(x):
         input_ids[i, : len(x_["input_ids"])] = torch.tensor(x_["input_ids"])[
             :max_seq_len
         ]
-    labels = torch.full((batch_size, 1), fill_value=-100, dtype=torch.int64)
+    labels = torch.full((batch_size, max_seq_len), fill_value=-100, dtype=torch.int64)
     for i, x_ in enumerate(x):
-        labels[i, 0] = torch.tensor(x_["labels"])
+        labels[i, : len(x_["labels"])] = torch.tensor(x_["labels"])[:max_seq_len]
     return {
         "input_ids": input_ids,
         "labels": labels,
     }
 
+def tokenize_contrastive_example(example, tokenizer):
+    tokenized_inputs = tokenizer(
+        example["inputs"],
+        return_attention_mask=False,
+    )
+    tokenized_sol1 = tokenizer(
+        example["sol1"],
+        return_attention_mask=False,
+    )
+    tokenized_sol2 = tokenizer(
+        example["sol2"],
+        return_attention_mask=False,
+    )
+    tokenized_label = tokenizer(
+        example["label_str"],
+        return_attention_mask=False,
+    )
+    sol1=tokenized_inputs["input_ids"] +tokenized_sol1["input_ids"] 
+    sol2=tokenized_inputs["input_ids"] +tokenized_sol2["input_ids"] 
+    return {"sol1": sol1, "sol2": sol2, "label": tokenized_label["input_ids"]}
+
+
+def collate_contrastive_fn(x, max_len=200):
+    max_seq_len_1 = min(max(len(x_["sol1"]) for x_ in x), max_len)
+    max_seq_len_2 = min(max(len(x_["sol2"]) for x_ in x), max_len)
+    batch_size = len(x)
+
+    sol1 = torch.zeros((batch_size, max_seq_len_1), dtype=torch.int64)
+    for i, x_ in enumerate(x):
+        sol1[i, : len(x_["sol1"])] = torch.tensor(x_["sol1"])[
+            :max_seq_len_1
+        ]
+    sol2 = torch.zeros((batch_size, max_seq_len_2), dtype=torch.int64)
+    for i, x_ in enumerate(x):
+        sol2[i, : len(x_["sol2"])] = torch.tensor(x_["sol2"])[
+            :max_seq_len_2
+        ]
+    labels = torch.full((batch_size, 1), fill_value=-100, dtype=torch.int64)
+    for i, x_ in enumerate(x):
+        labels[i, 0] = torch.tensor(x_["label"])
+    return {
+        "sol1": sol1,
+        "sol2": sol2,
+        "label": labels,
+    }
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -80,7 +124,7 @@ def parse_args():
         help="Path to dataset file",
     )
     parser.add_argument(
-        "--output_dir",
+        "--output_path",
         type=str,
         default=None,
         help="Path to dataset file",
@@ -95,6 +139,18 @@ def parse_args():
         "--max_seq_len",
         type=int,
         default=200,
+        help="Path to dataset file",
+    )
+    parser.add_argument(
+        "--cache_dir",
+        type=str,
+        default=None,
+        help="Path to dataset file",
+    )
+    parser.add_argument(
+        "--metric",
+        type=str,
+        default=None,
         help="Path to dataset file",
     )
     args = parser.parse_args()
@@ -114,22 +170,22 @@ def main():
             print(prompt)
         dataset = [update_instance_inputs(example, prompt) for example in dataset]
 
-    print(dataset[0])
-    dataset = [tokenize_example(example, tokenizer) for example in dataset]
-
-    unique_labels = []
-    for example in dataset:
-        labels = example["labels"]
-        unique_labels.extend(labels)
-    unique_labels = list(set(unique_labels))
-    print(unique_labels)
-
-    data_loader = DataLoader(
+    if args.metric == 'contrastive':
+        dataset = [tokenize_contrastive_example(example, tokenizer) for example in dataset]
+        data_loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        collate_fn=collate_fn,
-    )
+        collate_fn=collate_contrastive_fn,
+        )
+    else:
+        dataset = [tokenize_example(example, tokenizer) for example in dataset]
+        data_loader = DataLoader(
+            dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            collate_fn=collate_fn,
+        )
 
     # Model
     model = MambaDecoderForCausalLM.from_pretrained(args.model_name, use_mambapy=True)
@@ -137,35 +193,57 @@ def main():
     model.cuda()
     device = "cuda"
 
-    correct = 0
-    total = 0
+    if args.cache_dir:
+        cache = TrainableMambaCache(config=model.config)
+        state_dict = torch.load(os.path.join(args.cache_dir, 'training_state.bin'))
+        cache.load_state_dict(state_dict["model_state_dict"])
+        encoder_cache_params = MambaCache(
+            config=model.config, max_batch_size=1, dtype=model.dtype, device = device
+        )
+        encoder_cache_params.conv_states = cache.learned_conv_state.expand([-1, args.batch_size, -1, -1]).to(device)
+        encoder_cache_params.ssm_states = cache.learned_ssm_state.expand([-1, args.batch_size, -1, -1]).to(device)
+    
 
+    metric=0
+    total=0
     for idx, batch in enumerate(data_loader):
         print(idx)
         batch = {k: v.to(device) for k, v in batch.items()}
-        outputs = model(batch["input_ids"])
-        next_token_logits = outputs.logits[:, -1, :]
-        mask = torch.full_like(
-            next_token_logits, float("-inf")
-        )  # Fill with very negative values to mask out unwanted logits
-        mask[:, unique_labels] = next_token_logits[
-            :, unique_labels
-        ]  # Keep only logits 17 and 18
-
-        # Get the argmax over the restricted logits
-        preds = mask.argmax(dim=-1)
-
-        correct += (preds == batch["labels"][:, 0]).sum().item()
-        total += len(batch["labels"])
-
-    accuracy = correct / total
-    print(f"Accuracy: {accuracy}")
-
-    if args.output_dir:
-        output_dir = args.output_dir
-        accuracy_file = os.path.join(output_dir, "accuracy.txt")
-        with open(accuracy_file, "w") as file:
-            file.write(f"{accuracy}")
+        if batch["label"].shape[0] == args.batch_size:
+            if args.metric == 'contrastive':
+                with torch.no_grad():
+                    if args._get_args:
+                        outputs1= model(input_ids=batch["sol1"], labels=batch["sol1"], encoder_cache_params=encoder_cache_params)                        
+                        outputs2= model(input_ids=batch["sol2"], labels=batch["sol2"], encoder_cache_params=encoder_cache_params)
+                    else:
+                        outputs1= model(input_ids=batch["sol1"], labels=batch["sol1"])                        
+                        outputs2= model(input_ids=batch["sol2"], labels=batch["sol2"])
+                loss1 = outputs1.loss
+                loss2 = outputs2.loss
+                print(loss1.item(),loss2.item(), batch["label"][0])
+                if loss1.item() < loss2.item():
+                    pred = 17
+                elif loss1.item() > loss2.item():
+                    pred = 18
+                
+                if pred == batch["label"][0]:
+                    metric+=1
+                print('Correct:', metric)
+                total+=1
+            else:
+                with torch.no_grad():
+                    if args.cache_dir:
+                        outputs = model(**batch, encoder_cache_params=encoder_cache_params)
+                    else:
+                        outputs = model(**batch)
+                batch_loss = outputs.loss
+                print('Batch loss:', batch_loss.item())
+                metric+=batch_loss.item()
+                total+=1
+    print('Metric:', metric/total)
+    if args.output_path:
+        with open(args.output_path, "w") as file:
+            file.write(f"{metric}")
 
 
 if __name__ == "__main__":

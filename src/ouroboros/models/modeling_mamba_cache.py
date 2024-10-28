@@ -55,3 +55,7 @@ class TrainableMambaCache(nn.Module):
 
         self.conv_states = self.learned_conv_state.expand([-1, batch_size, -1, -1])
         self.ssm_states = self.learned_ssm_state.expand([-1, batch_size, -1, -1])
+
+    def resize(self, batch_size):
+        self.conv_states = self.learned_conv_state.expand([-1, batch_size, -1, -1])
+        self.ssm_states = self.learned_ssm_state.expand([-1, batch_size, -1, -1])
