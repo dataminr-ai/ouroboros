@@ -1,8 +1,8 @@
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from ouroboros.utils.model import get_cache_state_for_batch
 from ouroboros.models.modeling_mamba_decoder import MambaDecoderForCausalLM
+from ouroboros.utils.model import get_cache_state_for_batch
 
 
 def test_get_cache_params():
