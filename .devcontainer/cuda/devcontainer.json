@@ -16,7 +16,8 @@
                 "ms-python.python",
                 "ms-python.vscode-pylance",
                 "charliermarsh.ruff",
-                "ms-toolsai.jupyter-keymap"
+                "ms-toolsai.jupyter-keymap",
+                "ms-toolsai.tensorboard"
             ],
             "settings": {
                 "python.defaultInterpreterPath": "/root/.pyenv/shims/python"

@@ -23,6 +23,7 @@ dependencies = [
     "tqdm",
     "transformers",
     "datasets",
+    "tensorboard"
 ]
 
 [project.optional-dependencies]
@@ -33,7 +34,7 @@ fast = [
 dev = [
     "pre-commit",
     "pytest",
-    "ruff"
+    "ruff",
 ]
 
 [tool.setuptools.packages.find]
