@@ -43,6 +43,7 @@ from transformers import (
 from transformers.cache_utils import MambaCache
 from transformers.models.mamba import MambaConfig
 from transformers.models.mamba.modeling_mamba import is_fast_path_available
+from transformers.utils import PaddingStrategy
 
 from ouroboros.decode_cache import reconstruct
 from ouroboros.models import (
@@ -316,9 +317,9 @@ def main():
             batch_size=args.batch_size,
             shuffle=True,
             collate_fn=(
-                DataCollatorForSeq2Seq(tokenizer=tokenizer) 
+                DataCollatorForSeq2Seq(tokenizer=tokenizer, max_length=args.max_seq_len, padding=(True if not args.max_seq_len else PaddingStrategy.MAX_LENGTH))
                 if not args.contrastive 
-                else DataCollatorForContrastiveLMTraining(tokenizer=tokenizer)
+                else DataCollatorForContrastiveLMTraining(tokenizer=tokenizer, max_length=args.max_seq_len, padding=(True if not args.max_seq_len else PaddingStrategy.MAX_LENGTH))
             )
         )
 
@@ -399,23 +400,27 @@ def main():
                 encoder_cache_params.learned_ssm_state.detach().clone()
             )
 
-            # reconstructed state encoder(decoder(learned_cache_params))
-            decoded_cache = reconstruct(decoder, tokenizer, learned_cache_params).to(
-                args.device
-            )
-            with torch.no_grad():
-                recon_cache_params = get_cache_state_for_batch(decoded_cache, model)
+            reg_penalty = 0.0
 
-            # define distance function
-            ssm_dist = torch.norm(
-                learned_cache_params.ssm_states - recon_cache_params.ssm_states
-            )
-            conv_dist = torch.norm(
-                learned_cache_params.conv_states - recon_cache_params.conv_states
-            )
+            if args.reg:
+                # reconstructed state encoder(decoder(learned_cache_params))
+                decoded_cache = reconstruct(decoder, tokenizer, learned_cache_params).to(
+                    args.device
+                )
+                with torch.no_grad():
+                    recon_cache_params = get_cache_state_for_batch(decoded_cache, model)
+
+                # define distance function
+                ssm_dist = torch.norm(
+                    learned_cache_params.ssm_states - recon_cache_params.ssm_states
+                )
+                conv_dist = torch.norm(
+                    learned_cache_params.conv_states - recon_cache_params.conv_states
+                )
+                reg_penalty = args.reg_strength * (ssm_dist + conv_dist)
 
             # Loss
-            loss = outputs.loss + args.reg_strength * (ssm_dist + conv_dist)
+            loss = outputs.loss + reg_penalty
         return loss, outputs
 
     def contrastive_train_step(batch):
