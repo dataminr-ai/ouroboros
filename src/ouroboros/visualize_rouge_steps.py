@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 
 
 def main(model_dir, chunk_size):
-    submodel_dir = f'{model_dir}/{chunk_size}'
+    #submodel_dir = f'{model_dir}/{chunk_size}'
+    submodel_dir = model_dir
     eval_dir = os.path.join(submodel_dir,'evaluate/')
     checkpoints = [int(file.split('_')[0]) for file in os.listdir(eval_dir) if file.endswith('_rouge.json')]
     checkpoints.sort()

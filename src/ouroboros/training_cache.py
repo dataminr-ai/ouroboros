@@ -292,8 +292,9 @@ def main():
         trust_remote_code=args.trust_remote_code,
     )
 
-    model = MambaDecoderForCausalLM.from_pretrained(args.decoder, use_mambapy=True)
-    model.to(args.device, dtype=torch.bfloat16)
+    model = MambaDecoderForCausalLM.from_pretrained(args.decoder, use_mambapy=True, ignore_mismatched_sizes=True)
+    #model.to(args.device, dtype=torch.bfloat16)
+    model.to(args.device)
     model.gradient_checkpointing_enable()
     model.train()
 
@@ -446,10 +447,10 @@ def main():
             logger.info("Eval Loss: " + str(eval_loss))
             logger.info("Eval Acc: " + str(eval_acc))
             summary_writer.add_scalar(
-            "Loss/eval", valid_loss, completed_steps
+            "Loss/test", eval_loss, completed_steps
             )
             summary_writer.add_scalar(
-            "Acc/eval", valid_acc, completed_steps
+            "Acc/test", eval_acc, completed_steps
             )
 
     model.train()
@@ -541,13 +542,13 @@ def main():
                                     eval_loss, eval_acc = validate_classification(
                                         eval_loader, model, args, encoder_cache_params
                                     )
-                            logger.info("Eval Loss: " + str(eval_loss))
-                            logger.info("Eval Acc: " + str(eval_acc))
+                            logger.info("Test Loss: " + str(eval_loss))
+                            logger.info("Test Acc: " + str(eval_acc))
                             summary_writer.add_scalar(
-                            "Loss/eval", valid_loss, completed_steps
+                            "Loss/test", eval_loss, completed_steps
                             )
                             summary_writer.add_scalar(
-                            "Acc/eval", valid_acc, completed_steps
+                            "Acc/test", eval_acc, completed_steps
                             )
                         model.train()
     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")

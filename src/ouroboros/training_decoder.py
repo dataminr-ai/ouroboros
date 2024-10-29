@@ -29,6 +29,7 @@ import os
 
 import torch
 import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from transformers import (
     MODEL_MAPPING,
@@ -39,7 +40,9 @@ from transformers import (
 )
 from transformers.models.mamba.modeling_mamba import is_fast_path_available
 
+import datasets
 import ouroboros.encode_dataset as ed
+from ouroboros.evaluate import reconstruct
 from ouroboros.models import MambaDecoderConfig, MambaDecoderForCausalLM
 
 
@@ -63,19 +66,6 @@ def parse_args():
         type=str,
         default=None,
         help="A json file containing the training data",
-    )
-    # TODO(rlogan): Use
-    parser.add_argument(
-        "--validation_file",
-        type=str,
-        default=None,
-        help="A csv, txt or a json file containing the validation data.",
-    )
-    # TODO(rlogan): Use
-    parser.add_argument(
-        "--validation_split_percentage",
-        default=5,
-        help="The percentage of the train set used as validation set in case there's no validation split",
     )
     parser.add_argument(
         "--encoder",
@@ -161,6 +151,30 @@ def parse_args():
     parser.add_argument(
         "--seed", type=int, default=None, help="A seed for reproducible training."
     )
+    parser.add_argument(
+        "--validation_file",
+        type=str,
+        default=None,
+        help="Path to dataset file",
+    )
+    parser.add_argument(
+        "--validation_steps",
+        type=int,
+        default=10,
+        help="Number of steps between each validation run",
+    )
+    parser.add_argument(
+        "--mixed_min",
+        type=int,
+        default=4,
+        help="Mixed sequence length minimum",
+    )
+    parser.add_argument(
+        "--mixed_max",
+        type=int,
+        default=64,
+        help="Mixed sequence length maximum",
+    )
     # TODO(rlogan): Use with datasets when added back.
     parser.add_argument(
         "--preprocessing_num_workers",
@@ -168,6 +182,7 @@ def parse_args():
         default=None,
         help="The number of processes to use for the preprocessing.",
     )
+
     # TODO(rlogan): Use with datasets when added back.
     parser.add_argument(
         "--overwrite_cache",
@@ -261,10 +276,43 @@ def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
     torch.save(checkpoint, checkpoint_path)
     logging.info(f"Checkpoint saved at epoch {epoch}, step {step}")
 
+def validate(model, tokenizer, encoder, tokenized_validation_dataset, args, chunk): 
+    metric = datasets.load_metric("rouge", trust_remote_code=True)
+    validation_chunked_dataset = ed.chunk_dataset(tokenized_validation_dataset, chunk)
+    validation_batched_chunks = ed.batch_chunks(
+    validation_chunked_dataset, args.batch_size
+    )
+    # Reconstruct text using decoder
+    reconstructed = []
+    for idx, batch in enumerate(validation_batched_chunks):
+        print(idx)
+        with torch.no_grad():
+            input_ids = batch["input_ids"].to("cuda")
+            cache_params = ed.get_cache_params(input_ids, encoder)
+        generated = reconstruct(model, tokenizer, cache_params)
+        recons = tokenizer.batch_decode(generated, skip_special_tokens=True)
+        reconstructed.append(recons)
+        del batch, recons, cache_params
+        torch.cuda.empty_cache()
+
+    # Score
+    comparison={'reference':[], 'reconstructed':[]}
+    for idx, batch in enumerate(validation_batched_chunks):
+        print(idx)
+        reference_text = tokenizer.batch_decode(
+            batch["input_ids"], skip_special_tokens=True
+        )
+        reconstructed_text = reconstructed[idx]
+        comparison['reference'].extend(reference_text)
+        comparison['reconstructed'].extend(reconstructed_text)
+        metric.add(predictions=[reconstructed_text], references=[reference_text])
+    score = metric.compute()
+    del metric, comparison, reconstructed
+    return score
 
 def main():
     args = parse_args()
-
+    summary_writer = SummaryWriter(log_dir=args.output_dir)
     if is_fast_path_available:
         logger.info('Fast path is available.')
     else:
@@ -296,7 +344,8 @@ def main():
     logger.info(model.config.to_dict())
     logger.info(model)
     model.train()
-    model.to(args.device, dtype=torch.bfloat16)
+    model.to(args.device)
+    #model.to(args.device, dtype=torch.bfloat16)
     model.gradient_checkpointing_enable()
 
     encoder = AutoModelForCausalLM.from_pretrained(
@@ -305,11 +354,16 @@ def main():
         trust_remote_code=args.trust_remote_code,
     )
     encoder.eval()
-    encoder.to(args.device, dtype=torch.bfloat16)
+    encoder.to(args.device)
+    #encoder.to(args.device, dtype=torch.bfloat16)
 
     # Load Dataset
     raw_dataset = ed.read_dataset(args.train_file)
     tokenized_dataset = ed.tokenize_dataset(raw_dataset, tokenizer)
+
+    if args.validation_file:
+        raw_validation_dataset = ed.read_dataset(args.validation_file)
+        tokenized_validation_dataset = ed.tokenize_dataset(raw_validation_dataset, tokenizer)
 
     if not args.mixed_chunk:
         chunked_dataset = ed.chunk_dataset(tokenized_dataset, args.chunk_size)
@@ -317,10 +371,11 @@ def main():
             chunked_dataset, args.batch_size
         )
     else:
-        chunked_dataset = ed.chunk_dataset_varied(tokenized_dataset)
-        batched_chunks = ed.batch_chunks_varied(
-        chunked_dataset, args.batch_size
-    )
+        batched_chunks = ed.chunk_dataset_varied(tokenized_dataset, args.mixed_min, args.mixed_max)
+        print(len(batched_chunks))
+        #batched_chunks = ed.batch_chunks_varied(
+        #chunked_dataset, args.batch_size
+    #)
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
@@ -376,6 +431,27 @@ def main():
         completed_steps, start_step = int(args.resume_from_checkpoint), int(args.resume_from_checkpoint)
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         lr_scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    
+    if args.mixed_chunk:
+        min_chunk, max_chunk = args.mixed_min, args.mixed_max
+    else:
+        min_chunk, max_chunk = args.chunk_size, args.chunk_size
+    '''
+    model.eval()
+    for chunk in [args.mixed_min, args.mixed_max]:
+        #Rouge f1
+        score = validate(model, tokenizer, encoder, tokenized_validation_dataset, args, chunk)
+        summary_writer.add_scalar(
+        f"F1/valid{chunk}",score['rouge1'][0][2], completed_steps
+        )
+        summary_writer.add_scalar(
+        f"Prec/valid{chunk}",score['rouge1'][0][0], completed_steps
+        )
+        summary_writer.add_scalar(
+        f"Rec/valid{chunk}",score['rouge1'][0][1], completed_steps
+        )
+    model.train()
+    '''
 
     with tqdm(total=args.max_train_steps, desc="Training Progress") as pbar:
         pbar.update(completed_steps)
@@ -387,6 +463,7 @@ def main():
                     logger.info("Encode")
                     with torch.no_grad():
                         cache_params = ed.get_cache_params(batch['input_ids'], encoder)
+                        print(cache_params.ssm_states.shape)
                     logger.info(batch['input_ids'].device)
                     logger.info(cache_params)
 
@@ -412,6 +489,10 @@ def main():
 
                     completed_steps += 1
                     pbar.update(1)
+
+                    summary_writer.add_scalar(
+                            "Loss/train",loss.item(), completed_steps
+                            )
                     if completed_steps % checkpointing_steps == 0:
                         output_dir = f"step_{completed_steps}"
                         if args.output_dir is not None:
@@ -427,7 +508,23 @@ def main():
                         )
                     if completed_steps >= args.max_train_steps:
                         break
-
+                    if completed_steps % args.validation_steps == 0:
+                        model.eval()
+                        for chunk in list(set([min_chunk, max_chunk])):
+                        #chunk at 4 , 16, 64, 256
+                        #Rouge f1
+                            score = validate(model, tokenizer, encoder, tokenized_validation_dataset, args, chunk)
+                            summary_writer.add_scalar(
+                            f"F1/valid{chunk}",score['rouge1'][0][2], completed_steps
+                            )
+                            summary_writer.add_scalar(
+                            f"Prec/valid{chunk}",score['rouge1'][0][0], completed_steps
+                            )
+                            summary_writer.add_scalar(
+                            f"Rec/valid{chunk}",score['rouge1'][0][1], completed_steps
+                            )
+                        model.train()
+                        
     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
     save_checkpoint(model, optimizer, lr_scheduler, epoch, step, output_dir)
     logging.info(

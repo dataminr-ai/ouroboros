@@ -6,7 +6,8 @@ from ouroboros.evaluate import main as eval
 
 def main(base_model, eval_file, chunk_size, batch_size, model_dir):
 
-    trained_decoder=os.path.join(model_dir, str(chunk_size))
+    #trained_decoder=os.path.join(model_dir, str(chunk_size))
+    trained_decoder=model_dir
     output_dir=os.path.join(trained_decoder, 'evaluate')
 
     os.makedirs(output_dir, exist_ok=True)

@@ -23,5 +23,18 @@ dataset = dataset.map(
 )
 print(dataset["train"][0])
 dataset["train"].to_json("data/piqa/train.jsonl")
-dataset["validation"].to_json("data/piqa/validation.jsonl")
-dataset["test"].to_json("data/piqa/test.jsonl")
+
+# Split the validation set into new validation and test sets 
+val_test_split = dataset["validation"].train_test_split(test_size=0.5)
+
+# Access the train and test datasets
+val_data = val_test_split['train']
+test_data = val_test_split['test']
+
+# Save the new validation and test sets
+val_data.to_json("data/piqa/validation.jsonl")
+test_data.to_json("data/piqa/test.jsonl")
+
+print (len(dataset["train"]), len(val_data), len(test_data))
+#dataset["validation"].to_json("data/piqa/validation.jsonl")
+#dataset["test"].to_json("data/piqa/test.jsonl")
