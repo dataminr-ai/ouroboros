@@ -18,6 +18,27 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "justMyCode": false
+        },
+        {
+            "name": "Train Cache",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "src/ouroboros/training_cache.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--train_file", "data/piqa/train.jsonl", 
+                "--validation_file", "data/piqa/validation.jsonl",
+                "--validation_steps", "50", 
+                "--max_seq_len", "127",
+                "--decoder", "state-spaces/mamba-1.4b-hf",
+                "--output_dir", "ckpt/piqa-1.4b-contrastive-dpo-inspired-3/",
+                "--batch_size", "16",
+                "--checkpointing_steps", "100",
+                "--learning_rate", "5e-5", 
+                "--logging_steps", "1",
+                "--contrastive"
+            ],
+            "justMyCode": false
         }
     ]
 }

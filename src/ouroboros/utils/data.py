@@ -7,8 +7,12 @@ import torch
 from datasets import Dataset, Features, IterableDataset, load_dataset
 from torch import Generator
 from torch.nn.functional import pad
+from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerBase
-from transformers.data.data_collator import pad_without_fast_tokenizer_warning
+from transformers.data.data_collator import (
+    DataCollatorForSeq2Seq,
+    pad_without_fast_tokenizer_warning,
+)
 from transformers.utils import PaddingStrategy
 
 
@@ -48,10 +52,19 @@ def apply_prompt_to_dataset(dataset: Dataset, prompt: str):
         }
     )
 
-def tokenize_example(example: Dict[str, Any], tokenizer: PreTrainedTokenizerBase, label_pad_token_id: int = -100, add_eos: bool = False, training: bool = False):
+def tokenize_example(
+        example: Dict[str, Any],
+        tokenizer: PreTrainedTokenizerBase,
+        label_pad_token_id: int = -100,
+        add_eos: bool = False,
+        training: bool = False,
+        max_seq_len: Optional[int] = None
+    ):
     tokenized_inputs = tokenizer(
         example["inputs"],
-        return_attention_mask=False
+        return_attention_mask=False,
+        max_length=max_seq_len,
+        truncation=(True if max_seq_len is not None else None)
     )
     
     tokenized_label = None
@@ -59,6 +72,8 @@ def tokenize_example(example: Dict[str, Any], tokenizer: PreTrainedTokenizerBase
         tokenized_label = tokenizer(
             example["label_str"],
             return_attention_mask=False,
+            max_length=max_seq_len,
+            truncation=(True if max_seq_len is not None else None)
         )
         if add_eos:
             tokenized_label["input_ids"] += [tokenizer.eos_token_id]
@@ -72,14 +87,18 @@ def tokenize_example(example: Dict[str, Any], tokenizer: PreTrainedTokenizerBase
 
     return {"input_ids": input_ids, "labels": labels}
 
-def tokenize_example_for_contrastive_task(example: Dict[str, Any], tokenizer: PreTrainedTokenizerBase):
+def tokenize_example_for_contrastive_task(example: Dict[str, Any], tokenizer: PreTrainedTokenizerBase, max_seq_len: Optional[int] = None):
     positive_input_ids = tokenizer(
         example["positive"],
-        return_attention_mask=False
+        max_length=max_seq_len,
+        return_attention_mask=False,
+        truncation=(True if max_seq_len is not None else None)
     )["input_ids"]
     negative_input_ids = tokenizer(
         example["negative"],
-        return_attention_mask=False
+        max_length=max_seq_len,
+        return_attention_mask=False,
+        truncation=(True if max_seq_len is not None else None)
     )["input_ids"]
     return {
         "positive_input_ids": positive_input_ids,
@@ -90,18 +109,19 @@ def tokenize_example_for_contrastive_task(example: Dict[str, Any], tokenizer: Pr
 def tokenize_dataset(
         tokenizer: PreTrainedTokenizerBase,
         dataset: IterableDataset,
+        max_seq_len: Optional[int] = None,
         training: bool = False,
         contrastive: bool = False,
         add_eos: bool = False
     ):
     if contrastive:
         tokenized_dataset = dataset.map(
-            lambda example: tokenize_example_for_contrastive_task(tokenizer=tokenizer, example=example)
+            lambda example: tokenize_example_for_contrastive_task(tokenizer=tokenizer, example=example, max_seq_len=max_seq_len)
         )
         tokenized_dataset = tokenized_dataset.select_columns(["positive_input_ids", "negative_input_ids"])
     else:
         tokenized_dataset = dataset.map(
-            lambda example: tokenize_example(tokenizer=tokenizer, example=example, training=training, add_eos=add_eos)
+            lambda example: tokenize_example(tokenizer=tokenizer, example=example, training=training, add_eos=add_eos, max_seq_len=max_seq_len)
         )
         tokenized_dataset = tokenized_dataset.select_columns(["input_ids", "labels"])
     return tokenized_dataset
@@ -158,12 +178,31 @@ class DataCollatorForContrastiveLMTraining:
                 self.tokenizer,
                 [{input_col: feature[input_col]} for feature in features],
                 padding=self.padding,
-                max_length=self.max_length,
+                max_length=None, # Truncation done at tokenize step
                 pad_to_multiple_of=self.pad_to_multiple_of,
                 return_tensors=self.return_tensors,
             )
+            if self.max_length:
+                assert input_batch[input_col].shape[-1] <= self.max_length, f"Unexpected dimension for batch {input_batch[input_col].shape}"
             batch[input_col] = input_batch[input_col]
 
         self.tokenizer.model_input_names = original_model_inputs
         
         return batch
+    
+def get_dataloader_for_tokenized_dataset(
+        tokenized_dataset: Dataset,
+        tokenizer: PreTrainedTokenizerBase,
+        batch_size: int = 16, shuffle: Optional[bool] = None,
+        contrastive: bool = False, max_seq_len: Optional[int] = None
+    ) -> DataLoader:
+    return DataLoader(
+        dataset=tokenized_dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        collate_fn=(
+            DataCollatorForSeq2Seq(tokenizer=tokenizer, max_length=max_seq_len, padding=True)
+            if not contrastive
+            else DataCollatorForContrastiveLMTraining(tokenizer=tokenizer, max_length=max_seq_len, padding=True)
+        )
+    )

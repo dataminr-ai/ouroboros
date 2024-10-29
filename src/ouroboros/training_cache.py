@@ -29,21 +29,18 @@ import os
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from transformers import (
     MODEL_MAPPING,
     AutoModelForCausalLM,
     AutoTokenizer,
-    DataCollatorForSeq2Seq,
     SchedulerType,
     get_scheduler,
 )
 from transformers.cache_utils import MambaCache
 from transformers.models.mamba import MambaConfig
 from transformers.models.mamba.modeling_mamba import is_fast_path_available
-from transformers.utils import PaddingStrategy
 
 from ouroboros.decode_cache import reconstruct
 from ouroboros.models import (
@@ -52,7 +49,7 @@ from ouroboros.models import (
     TrainableMambaCache,
 )
 from ouroboros.utils.data import (
-    DataCollatorForContrastiveLMTraining,
+    get_dataloader_for_tokenized_dataset,
     load_dataset_from_files_or_hf,
     tokenize_dataset,
 )
@@ -285,23 +282,25 @@ def main():
         filepaths=files,
         streaming=False
     )
+    if args.overwrite_cache:
+        if hasattr(dataset, "cleanup_cache_files"):
+            dataset.cleanup_cache_files()
 
     tokenized_train_dataset = tokenize_dataset(
         tokenizer=tokenizer,
         dataset=dataset["train"],
         contrastive=args.contrastive,
+        max_seq_len=args.max_seq_len,
         training=True,
         add_eos=args.add_eos
     )
-    train_loader = DataLoader(
-        dataset=tokenized_train_dataset,
+    train_loader = get_dataloader_for_tokenized_dataset(
+        tokenized_dataset=tokenized_train_dataset,
+        tokenizer=tokenizer,
         batch_size=args.batch_size,
         shuffle=True,
-        collate_fn=(
-            DataCollatorForSeq2Seq(tokenizer=tokenizer)
-            if not args.contrastive else
-            DataCollatorForContrastiveLMTraining(tokenizer=tokenizer)
-        )
+        max_seq_len=args.max_seq_len,
+        contrastive=args.contrastive
     )
 
     if args.validation_file:
@@ -310,18 +309,19 @@ def main():
             dataset=dataset["validation"],
             contrastive=args.contrastive,
             training=True,
+            max_seq_len=args.max_seq_len,
             add_eos=args.add_eos
         )
-        valid_loader = DataLoader(
-            dataset=tokenized_validation_dataset,
+        valid_loader = get_dataloader_for_tokenized_dataset(
+            tokenized_dataset=tokenized_validation_dataset,
+            tokenizer=tokenizer,
             batch_size=args.batch_size,
             shuffle=True,
-            collate_fn=(
-                DataCollatorForSeq2Seq(tokenizer=tokenizer, max_length=args.max_seq_len, padding=(True if not args.max_seq_len else PaddingStrategy.MAX_LENGTH))
-                if not args.contrastive 
-                else DataCollatorForContrastiveLMTraining(tokenizer=tokenizer, max_length=args.max_seq_len, padding=(True if not args.max_seq_len else PaddingStrategy.MAX_LENGTH))
-            )
+            max_seq_len=args.max_seq_len,
+            contrastive=args.contrastive
         )
+    else:
+        valid_loader = None
 
     # Initialize cache
     if args.starting_prompt is not None:
@@ -502,6 +502,8 @@ def main():
         return loss, diff
 
     def validate():
+        if not valid_loader:
+            return 
         model.eval()
         acc_num = 0
         acc_denom = 0

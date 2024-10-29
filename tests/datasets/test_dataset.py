@@ -1,13 +1,14 @@
+import logging
 from pathlib import Path
 
 import pytest
 import torch
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, DataCollatorForSeq2Seq
-from transformers.utils import PaddingStrategy
 
 from ouroboros.utils.data import (
     DataCollatorForContrastiveLMTraining,
+    get_dataloader_for_tokenized_dataset,
     load_dataset_from_files_or_hf,
     tokenize_dataset,
 )
@@ -117,40 +118,53 @@ def test_tokenized_dataload_for_contrastive_training():
             assert dn == negative
 
 
-def test_tokenized_dataload_with_max_len_for_contrastive_training():
+def test_tokenized_dataload_with_max_len_for_contrastive_training(caplog):
+    caplog.set_level(logging.DEBUG)
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+
     sample_train_data_file = Path(__file__).parent / "samples" / "sample_train.jsonl"
     sample_test_data_file = Path(__file__).parent / "samples" / "sample_eval.jsonl"
     batch_size = 4
     max_seq_len = 127
 
-    train = load_dataset_from_files_or_hf(
+    dataset = load_dataset_from_files_or_hf(
         filepaths={
             "train": str(sample_train_data_file),
             "test": str(sample_test_data_file)
         },
-        split="train",
-        streaming=True
+        streaming=True,
     )
+    
+    train = dataset["train"]
 
     tokenizer = AutoTokenizer.from_pretrained("state-spaces/mamba-130m-hf")
     tokenizer.pad
     tokenizer.model_input_names = ["positive_input_ids", "negative_input_ids"]
     tokenized_dataset = tokenize_dataset(
-        tokenizer=tokenizer, dataset=train, contrastive=True
+        tokenizer=tokenizer, dataset=train, contrastive=True, max_seq_len=max_seq_len
     )
 
-    dataloader = DataLoader(
-        dataset=tokenized_dataset,
+    dataloader = get_dataloader_for_tokenized_dataset(
+        tokenized_dataset=tokenized_dataset,
+        tokenizer=tokenizer,
         batch_size=batch_size,
-        collate_fn=DataCollatorForContrastiveLMTraining(tokenizer=tokenizer, max_length=max_seq_len, padding=PaddingStrategy.MAX_LENGTH if max_seq_len else True),
+        contrastive=True,
+        max_seq_len=max_seq_len
     )
 
     for i, batch in enumerate(dataloader):
-        if i == 4: 
+        if i == 32: 
             break
+        logger.debug("Positive Input IDs shape: " + str(batch["positive_input_ids"].shape))
+        logger.debug("Negative Input IDs shape: " + str(batch["negative_input_ids"].shape))
         assert "positive_input_ids" in batch
-        assert batch["positive_input_ids"].shape[0] == 4
-        assert batch["positive_input_ids"].shape[-1] == max_seq_len
+        assert batch["positive_input_ids"].shape[0] <= 4
+        assert batch["positive_input_ids"].shape[-1] <= max_seq_len
         assert "negative_input_ids" in batch
-        assert batch["negative_input_ids"].shape[-1] == max_seq_len
-        assert batch["negative_input_ids"].shape[0] == 4
+        assert batch["negative_input_ids"].shape[-1] <= max_seq_len
+        assert batch["negative_input_ids"].shape[0] <= 4
+        assert batch["negative_input_ids"].shape[0] == batch["positive_input_ids"].shape[0]
+
+        for record in caplog.records:  # Print Caplog records
+            print(record.levelname, record.message)
