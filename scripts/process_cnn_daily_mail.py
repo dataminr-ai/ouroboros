@@ -10,7 +10,7 @@ def prepare(x):
     }
 
 
-dataset = datasets.load_dataset("abisee/cnn_dailymail", name="plain_text")
+dataset = datasets.load_dataset("abisee/cnn_dailymail", name="3.0.0")
 dataset = dataset.map(
     prepare, batched=False, remove_columns=dataset["train"].column_names
 )
