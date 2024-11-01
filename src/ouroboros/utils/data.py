@@ -196,6 +196,8 @@ def get_dataloader_for_tokenized_dataset(
         batch_size: int = 16, shuffle: Optional[bool] = None,
         contrastive: bool = False, max_seq_len: Optional[int] = None
     ) -> DataLoader:
+    if isinstance(tokenize_dataset, IterableDataset):
+        tokenized_dataset = tokenized_dataset.with_format("torch")
     return DataLoader(
         dataset=tokenized_dataset,
         batch_size=batch_size,

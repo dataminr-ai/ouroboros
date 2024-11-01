@@ -26,18 +26,18 @@
             "program": "src/ouroboros/training_cache.py",
             "console": "integratedTerminal",
             "args": [
-                "--train_file", "data/piqa/train.jsonl", 
-                "--validation_file", "data/piqa/validation.jsonl",
+                "--train_file", "data/cnn_daily_mail/train.jsonl", 
+                "--validation_file", "data/cnn_daily_mail/validation.jsonl",
                 "--validation_steps", "50", 
                 "--max_seq_len", "127",
-                "--decoder", "state-spaces/mamba-1.4b-hf",
-                "--output_dir", "ckpt/piqa-1.4b-contrastive-dpo-inspired-3/",
+                "--decoder", "state-spaces/mamba-130m-hf",
+                "--output_dir", "ckpt/cnn-daily-mail-130m-generative/",
                 "--batch_size", "16",
                 "--checkpointing_steps", "100",
                 "--learning_rate", "5e-5", 
                 "--logging_steps", "1",
-                "--contrastive",
-                "--overwrite_cache"
+                "--overwrite_cache",
+                "--stream_dataset"
             ],
             "justMyCode": false
         }

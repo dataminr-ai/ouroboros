@@ -1,6 +1,6 @@
 from os import PathLike
 from pathlib import Path
-from typing import Any, Dict, Tuple, Type, Union
+from typing import Any, Dict, Optional, Tuple, Type, Union
 
 import torch
 from torch.optim import Optimizer
@@ -9,7 +9,7 @@ from transformers import PreTrainedModel
 from transformers.models.mamba.modeling_mamba import MambaCache
 
 
-def save_checkpoint(model: Union[PreTrainedModel, torch.nn.Module], optimizer: Optimizer, scheduler: LRScheduler, epoch: int, step: int, checkpoint_path: PathLike):
+def save_checkpoint(model: Union[PreTrainedModel, torch.nn.Module], optimizer: Optimizer, scheduler: LRScheduler, step: int, checkpoint_path: PathLike, epoch: Optional[int] = None):
     checkpoint_path = Path(checkpoint_path)
     checkpoint_path.mkdir(parents=True, exist_ok=True)
     if isinstance(model, PreTrainedModel):

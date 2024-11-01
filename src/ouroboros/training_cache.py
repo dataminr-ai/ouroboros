@@ -241,7 +241,7 @@ def parse_args():
         "--logging_steps", type=int, default=1, help="Logging frequency"
     )
     parser.add_argument("--contrastive", action="store_true", help="Run contrastive training")
-    parser.add_argument("--stream-dataset", action="store_true", default=False, help="Stream dataset instead of loading it all at once")
+    parser.add_argument("--stream_dataset", action="store_true", default=False, help="Stream dataset instead of loading it all at once")
 
     args = parser.parse_args()
 
@@ -295,6 +295,9 @@ def main():
         training=True,
         add_eos=args.add_eos
     )
+    if args.stream_dataset:
+        tokenized_train_dataset = tokenized_train_dataset.shuffle(seed=args.seed)
+
     train_loader = get_dataloader_for_tokenized_dataset(
         tokenized_dataset=tokenized_train_dataset,
         tokenizer=tokenizer,
@@ -313,6 +316,8 @@ def main():
             max_seq_len=args.max_seq_len,
             add_eos=args.add_eos
         )
+        if args.stream_dataset:
+            tokenized_validation_dataset = tokenized_validation_dataset.shuffle(seed=args.seed)
         valid_loader = get_dataloader_for_tokenized_dataset(
             tokenized_dataset=tokenized_validation_dataset,
             tokenizer=tokenizer,
@@ -350,11 +355,13 @@ def main():
         params_to_optimize, lr=args.learning_rate, weight_decay=args.weight_decay
     )
 
-    # Scheduler and math around the number of training steps.
-    num_update_steps_per_epoch = math.ceil(
-        len(train_loader) / args.gradient_accumulation_steps
-    )
     if args.max_train_steps is None:
+        # Scheduler and math around the number of training steps.
+        if args.stream_dataset:
+            raise ValueError("max_train_steps cannot be `None` when using stream_dataset")
+        num_update_steps_per_epoch = math.ceil(
+            len(train_loader) / args.gradient_accumulation_steps
+        )
         max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
     else:
         max_train_steps = args.max_train_steps
@@ -565,69 +572,67 @@ def main():
 
     with tqdm(total=max_train_steps, desc="Training Progress") as pbar:
         pbar.update(completed_steps)
-        for epoch in range(0, args.num_train_epochs):
-            for step, batch in enumerate(train_loader):
-                if step > start_step:
-                    batch = {k: v.to(args.device) for k, v in batch.items()}
-                    batch_size = next(iter(batch.values())).size(0)
-                    encoder_cache_params.resize(batch_size)
-                    if args.contrastive:
-                        loss, _ = contrastive_train_step(batch)
-                    else:
-                        loss, _ = train_step(batch)
+        step = start_step
+        while step < max_train_steps:
+            batch = next(iter(train_loader))
+            batch = {k: v.to(args.device) for k, v in batch.items()}
+            batch_size = next(iter(batch.values())).size(0)
+            encoder_cache_params.resize(batch_size)
+            if args.contrastive:
+                loss, _ = contrastive_train_step(batch)
+            else:
+                loss, _ = train_step(batch)
 
-                    loss.backward()
+            loss.backward()
 
-                    optimizer.step()
-                    lr_scheduler.step()
-                    optimizer.zero_grad()
+            optimizer.step()
+            lr_scheduler.step()
+            optimizer.zero_grad()
 
-                    completed_steps += 1
-                    pbar.update(1)
-                    if completed_steps % args.logging_steps == 0:
-                        summary_writer.add_scalar(
-                            "Loss/train", loss.item(), completed_steps
-                        )
-                        summary_writer.add_scalar(
-                            "Memory",
-                            torch.cuda.memory_allocated(args.device),
-                            completed_steps,
-                        )
+            completed_steps += 1
+            pbar.update(1)
+            if completed_steps % args.logging_steps == 0:
+                summary_writer.add_scalar(
+                    "Loss/train", loss.item(), completed_steps
+                )
+                summary_writer.add_scalar(
+                    "Memory",
+                    torch.cuda.memory_allocated(args.device),
+                    completed_steps,
+                )
 
-                    if completed_steps % checkpointing_steps == 0:
-                        output_dir = f"step_{completed_steps}"
-                        if args.output_dir is not None:
-                            output_dir = os.path.join(args.output_dir, output_dir)
-                        logging.info(
-                            "Saving Checkpoint at Step"
-                            + str(completed_steps)
-                            + " in directory "
-                            + str(output_dir)
-                        )
-                        save_checkpoint(
-                            encoder_cache_params,
-                            optimizer,
-                            lr_scheduler,
-                            epoch,
-                            step,
-                            output_dir,
-                        )
+            if completed_steps % checkpointing_steps == 0:
+                output_dir = f"step_{completed_steps}"
+                if args.output_dir is not None:
+                    output_dir = os.path.join(args.output_dir, output_dir)
+                logging.info(
+                    "Saving Checkpoint at Step"
+                    + str(completed_steps)
+                    + " in directory "
+                    + str(output_dir)
+                )
+                save_checkpoint(
+                    encoder_cache_params,
+                    optimizer,
+                    lr_scheduler,
+                    step,
+                    output_dir,
+                )
 
-                    if completed_steps % args.validation_steps == 0:
-                        valid_loss, valid_acc = validate()
-                        summary_writer.add_scalar(
-                            "Loss/valid", valid_loss, completed_steps
-                        )
-                        summary_writer.add_scalar(
-                            "Acc/valid", valid_acc, completed_steps
-                        )
-                        model.train()
+            if completed_steps % args.validation_steps == 0:
+                valid_loss, valid_acc = validate()
+                summary_writer.add_scalar(
+                    "Loss/valid", valid_loss, completed_steps
+                )
+                summary_writer.add_scalar(
+                    "Acc/valid", valid_acc, completed_steps
+                )
+                model.train()
     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
     save_checkpoint(
         model=encoder_cache_params,
         optimizer=optimizer,
         scheduler=lr_scheduler,
-        epoch=epoch,
         step=step,
         checkpoint_path=output_dir,
     )
