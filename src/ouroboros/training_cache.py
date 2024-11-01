@@ -240,7 +240,8 @@ def parse_args():
     parser.add_argument(
         "--logging_steps", type=int, default=1, help="Logging frequency"
     )
-    parser.add_argument("--contrastive", action="store_true")
+    parser.add_argument("--contrastive", action="store_true", help="Run contrastive training")
+    parser.add_argument("--stream-dataset", action="store_true", default=False, help="Stream dataset instead of loading it all at once")
 
     args = parser.parse_args()
 
@@ -280,7 +281,7 @@ def main():
 
     dataset = load_dataset_from_files_or_hf(
         filepaths=files,
-        streaming=False
+        streaming=args.stream_dataset
     )
     if args.overwrite_cache:
         if hasattr(dataset, "cleanup_cache_files"):
@@ -298,7 +299,7 @@ def main():
         tokenized_dataset=tokenized_train_dataset,
         tokenizer=tokenizer,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=not args.stream_dataset,
         max_seq_len=args.max_seq_len,
         contrastive=args.contrastive
     )
@@ -316,7 +317,7 @@ def main():
             tokenized_dataset=tokenized_validation_dataset,
             tokenizer=tokenizer,
             batch_size=args.batch_size,
-            shuffle=True,
+            shuffle=not args.stream_dataset,
             max_seq_len=args.max_seq_len,
             contrastive=args.contrastive
         )
