@@ -3,7 +3,7 @@ import datasets
 
 def prepare(x):
     inputs = f'Article:\n{x["article"]}\Summary:\n'
-    label_str = f'Summary:\n{x["highlights"]}'
+    label_str = x["highlights"]
     return {
         "inputs": inputs,
         "label_str": label_str,
