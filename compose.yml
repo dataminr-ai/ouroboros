@@ -8,6 +8,7 @@ services:
       - $HOME/.config:/root/.config
       - ./ckpt:/workspace/ckpt
       - ./:/workspace
+      - ./data:/workspace/data
     working_dir: /workspace
     command: >
       python3 src/ouroboros/training_cache.py --train_file data/piqa/train.jsonl 
