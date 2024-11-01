@@ -36,7 +36,8 @@
                 "--checkpointing_steps", "100",
                 "--learning_rate", "5e-5", 
                 "--logging_steps", "1",
-                "--contrastive"
+                "--contrastive",
+                "--overwrite_cache"
             ],
             "justMyCode": false
         }

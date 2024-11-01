@@ -351,16 +351,18 @@ def main():
 
     # Scheduler and math around the number of training steps.
     num_update_steps_per_epoch = math.ceil(
-        len(dataset) / args.gradient_accumulation_steps / args.batch_size
+        len(train_loader) / args.gradient_accumulation_steps
     )
     if args.max_train_steps is None:
-        args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
+        max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
+    else:
+        max_train_steps = args.max_train_steps
 
     lr_scheduler = get_scheduler(
         name=args.lr_scheduler_type,
         optimizer=optimizer,
         num_warmup_steps=args.num_warmup_steps,
-        num_training_steps=args.max_train_steps,
+        num_training_steps=max_train_steps,
     )
 
     checkpointing_steps = args.checkpointing_steps
@@ -560,7 +562,7 @@ def main():
         logger.info("Validation Acc: " + str(valid_acc))
         return valid_loss, valid_acc
 
-    with tqdm(total=args.max_train_steps, desc="Training Progress") as pbar:
+    with tqdm(total=max_train_steps, desc="Training Progress") as pbar:
         pbar.update(completed_steps)
         for epoch in range(0, args.num_train_epochs):
             for step, batch in enumerate(train_loader):
