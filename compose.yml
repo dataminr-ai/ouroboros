@@ -1,23 +1,4 @@
 services:
-  train-autoencoder:
-    build: 
-      context: .
-      dockerfile: Dockerfile
-    volumes:
-      - $HOME/.cache/huggingface:/root/.cache/huggingface
-      - $HOME/.config:/root/.config
-      - ./:/workspace
-    working_dir: /workspace
-    command: >
-      python3 training.py
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-
   train-cache:
     build:
       context: .
@@ -28,10 +9,10 @@ services:
       - ./:/workspace
     working_dir: /workspace
     command: >
-      python3 src/ouroboros/training_cache.py --train_file data/piqa/train.jsonl \
-      --validation_file data/piqa/validation.jsonl --validation_steps 50 --max_seq_len 127 \
-      --decoder state-spaces/mamba-1.4b-hf \
-      --output_dir ckpt/piqa-1p4b-contrastive-dpo-inspired/ --batch_size 16 \
+      python3 src/ouroboros/training_cache.py --train_file data/piqa/train.jsonl 
+      --validation_file data/piqa/validation.jsonl --validation_steps 50 --max_seq_len 127 
+      --decoder state-spaces/mamba-1.4b-hf 
+      --output_dir ckpt/piqa-1p4b-contrastive-dpo-inspired/ --batch_size 16 
       --checkpointing_steps 100 --learning_rate 5e-5 --logging_steps 1 --contrastive
     deploy:
       resources:
