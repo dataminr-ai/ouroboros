@@ -6,6 +6,7 @@ services:
     volumes:
       - $HOME/.cache/huggingface:/root/.cache/huggingface
       - $HOME/.config:/root/.config
+      - ./ckpt:/workspace/ckpt
       - ./:/workspace
     working_dir: /workspace
     command: >
