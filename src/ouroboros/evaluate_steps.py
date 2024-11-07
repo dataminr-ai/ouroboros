@@ -1,7 +1,7 @@
 import argparse
 import os
 
-from ouroboros.evaluate import main as eval
+from ouroboros.eval import main as eval
 
 
 def main(base_model, eval_file, chunk_size, batch_size, model_dir):

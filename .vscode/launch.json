@@ -20,7 +20,7 @@
             "justMyCode": false
         },
         {
-            "name": "Train Cache",
+            "name": "Train Cache Contrastive",
             "type": "debugpy",
             "request": "launch",
             "program": "src/ouroboros/training_cache.py",
@@ -38,6 +38,31 @@
                 "--logging_steps", "1",
                 "--overwrite_cache",
                 "--stream_dataset"
+            ],
+            "justMyCode": false
+        },
+        {
+            "name": "Train Cache Generative",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "src/ouroboros/training_cache.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--train_file", "data/cnn_daily_mail/train.jsonl", 
+                "--validation_file", "data/cnn_daily_mail/validation.jsonl",
+                "--validation_steps", "1", 
+                "--max_seq_len", "200",
+                "--decoder", "state-spaces/mamba-130m-hf",
+                "--output_dir", "ckpt/cnn-daily-mail-130m-generative/",
+                "--batch_size", "16",
+                "--checkpointing_steps", "100",
+                "--learning_rate", "5e-5", 
+                "--logging_steps", "1",
+                "--max_train_steps", "3",
+                "--validation_limit", "3",
+                "--overwrite_cache",
+                "--stream_dataset",
+                "--generative"
             ],
             "justMyCode": false
         }

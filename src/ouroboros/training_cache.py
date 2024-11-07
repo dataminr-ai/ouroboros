@@ -27,6 +27,7 @@ import logging
 import math
 import os
 
+import evaluate
 import torch
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
@@ -241,6 +242,7 @@ def parse_args():
         "--logging_steps", type=int, default=1, help="Logging frequency"
     )
     parser.add_argument("--contrastive", action="store_true", help="Run contrastive training")
+    parser.add_argument("--generative", action="store_true", help="Run generative training")
     parser.add_argument("--stream_dataset", action="store_true", default=False, help="Stream dataset instead of loading it all at once")
 
     args = parser.parse_args()
@@ -326,6 +328,12 @@ def main():
             max_seq_len=args.max_seq_len,
             contrastive=args.contrastive
         )
+        if args.validation_limit is None or args.validation_limit == -1:
+            if args.stream_dataset:
+                raise ValueError("validation_limit cannot be none for streaming data")
+            num_validation_steps = len(valid_loader)
+        else:
+            num_validation_steps = args.validation_limit
     else:
         valid_loader = None
 
@@ -379,6 +387,11 @@ def main():
 
     # TODO(rlogan): Add back checkpointing
     completed_steps, start_step = 0, 0
+
+    if args.generative:
+        rouge = evaluate.load("rouge")
+    else:
+        rouge = None
 
     # For reconstruction
     if args.reg:
@@ -512,7 +525,7 @@ def main():
         return loss, diff
 
     def validate():
-        if not valid_loader:
+        if valid_loader is None:
             return 
         model.eval()
         acc_num = 0
@@ -520,7 +533,7 @@ def main():
         loss = 0
         total = 0
         steps = 0
-        max_steps = len(valid_loader)
+        rouge_scores = []
         learned_cache_params = MambaCache(
             config=model.config, max_batch_size=1, dtype=model.dtype
         )
@@ -531,11 +544,10 @@ def main():
             encoder_cache_params.learned_ssm_state.detach().clone()
         )
         with torch.no_grad():
-            with tqdm(total=max_steps, desc="Validation Progress") as pbar:
+            with tqdm(total=num_validation_steps, desc="Validation Progress") as pbar:
                 pbar.update(steps)
-                for i, batch in enumerate(valid_loader):
-                    if i == args.validation_limit:
-                        break
+                for _ in range(num_validation_steps):
+                    batch = next(iter(valid_loader))
                     batch = {k: v.to(args.device) for k, v in batch.items()}
                     batch_size = next(iter(batch.values())).size(0)
                     encoder_cache_params.resize(batch_size)
@@ -544,6 +556,13 @@ def main():
                         preds = diff > 0
                         acc_num += preds.sum().item()
                         acc_denom += preds.size(0)
+                    elif args.generative:
+                        assert rouge is not None, "Metric not loaded"
+                        batch_loss, outputs = train_step(batch)
+                        preds = outputs.logits.argmax(dim=-1)
+                        original_labels = batch["labels"]
+                        rouge_score = rouge(predictions=preds, references=original_labels, use_aggregator=True)
+                        rouge_scores.append(rouge_score)
                     else:
                         batch_loss, outputs = train_step(batch)
                         # NOTE(rlogan): This is a kludge. We shouldn't teacher force.

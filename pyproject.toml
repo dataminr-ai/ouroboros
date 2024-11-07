@@ -23,7 +23,10 @@ dependencies = [
     "tqdm",
     "transformers",
     "datasets",
-    "tensorboard"
+    "tensorboard",
+    "evaluate",
+    "nltk",
+    "rouge_score"
 ]
 
 [project.optional-dependencies]
