@@ -173,7 +173,6 @@ def main():
             #)
             print ("Not implemented")
         else:
-            print('Doing classification eval...')
             _, valid_acc = validate_classification(
                 valid_loader, model, args, encoder_cache_params
             )

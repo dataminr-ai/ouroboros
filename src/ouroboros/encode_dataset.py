@@ -53,12 +53,14 @@ def chunk_dataset_varied(tokenized_dataset, min_block_size=4, max_block_size=64)
     i = 0
     while i < total_length:
         # Random block size between min_block_size and max_block_size
-        #block_size = random.randint(min_block_size, max_block_size)
+        block_size = random.randint(min_block_size, max_block_size)
+        '''
         min_exp = math.ceil(math.log2(min_block_size))
         max_exp = math.floor(math.log2(max_block_size))
         block_size = 2 ** random.randint(min_exp, max_exp)
+        '''
         end_index = min(i + block_size, total_length)
-        chunks["input_ids"].append(concatenated_input_ids[i:end_index])
+        chunks["input_ids"].append(concatenated_input_ids[i:end_index].reshape(1,-1))
         i = end_index
 
     # Remove any empty last chunk (in case total_length == 0)
@@ -89,23 +91,23 @@ def batch_chunks_varied(chunked_dataset, batch_size):
 
     for i in range(0, total_chunks, batch_size):
         batch = chunked_dataset["input_ids"][i : i + batch_size]
+        batched_chunks.append(batch
 
-        # Find the maximum length in this batch
-        max_length = max(len(chunk) for chunk in batch)
-
-        # Pad each chunk in the batch to max_length
-        padded_batch = [
-            torch.cat([chunk, torch.full((max_length - len(chunk),), pad_token)])
-            if len(chunk) < max_length else chunk
-            for chunk in batch
-        ]
-
-        # Stack the padded chunks into a single tensor for the batch
-        batched_chunks.append(
-            {
-                "input_ids": torch.stack(padded_batch),
-            }
         )
+    return batched_chunks
+
+def pad_batch_varied(batch):
+    pad_token=0
+    batch = [b.squeeze(0) for b in batch]
+    max_length = max(len(chunk) for chunk in batch)
+    padded_batch = [
+        torch.cat([chunk, torch.full((max_length - len(chunk),), pad_token).to(chunk.device)])
+        if len(chunk) < max_length else chunk
+        for chunk in batch
+    ]
+    batched_chunks ={
+            "input_ids": torch.stack(padded_batch),
+        }
 
     return batched_chunks
 
