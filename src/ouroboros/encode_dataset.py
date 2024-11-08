@@ -1,5 +1,4 @@
 import json
-import math
 import random
 
 import torch
@@ -54,11 +53,6 @@ def chunk_dataset_varied(tokenized_dataset, min_block_size=4, max_block_size=64)
     while i < total_length:
         # Random block size between min_block_size and max_block_size
         block_size = random.randint(min_block_size, max_block_size)
-        '''
-        min_exp = math.ceil(math.log2(min_block_size))
-        max_exp = math.floor(math.log2(max_block_size))
-        block_size = 2 ** random.randint(min_exp, max_exp)
-        '''
         end_index = min(i + block_size, total_length)
         chunks["input_ids"].append(concatenated_input_ids[i:end_index].reshape(1,-1))
         i = end_index
@@ -85,7 +79,6 @@ def batch_chunks(chunked_dataset, batch_size):
 
 
 def batch_chunks_varied(chunked_dataset, batch_size):
-    pad_token=0
     total_chunks = len(chunked_dataset["input_ids"])
     batched_chunks = []
 
