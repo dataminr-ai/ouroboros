@@ -1,20 +1,21 @@
 import argparse
-import json
+import functools
 import os
 
 import torch
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
-from ouroboros.models import MambaDecoderForCausalLM
-
-
-def load_dataset(file_path):
-    dataset = []
-    with open(file_path, "r") as file:
-        for line in file:
-            dataset.append(json.loads(line))
-    return dataset
+from ouroboros.cache_utils import (
+    collate_fn,
+    contrastive_collate_fn,
+    contrastive_tokenize_example,
+    load_dataset,
+    tokenize_example,
+    validate_classification,
+    validate_contrastive,
+)
+from ouroboros.models import MambaDecoderForCausalLM, TrainableMambaCache
 
 
 def update_instance_inputs(instance, prompt):
@@ -22,40 +23,10 @@ def update_instance_inputs(instance, prompt):
     instance["label_str"] = instance["label_str"]
     return instance
 
-
-def tokenize_example(example, tokenizer):
-    tokenized_inputs = tokenizer(
-        example["inputs"],
-        return_attention_mask=False,
-    )
-    tokenized_label = tokenizer(
-        example["label_str"],
-        return_attention_mask=False,
-    )
-    input_ids = tokenized_inputs["input_ids"]
-    labels = tokenized_label["input_ids"]
-    return {"input_ids": input_ids, "labels": labels}
-
-
-def collate_fn(x):
-    # NOTE(rlogan): This is slow but correct
-    # TODO: Make the max size configurable instead of 128
-    max_seq_len = max(len(x_["input_ids"]) for x_ in x)
-    batch_size = len(x)
-
-    input_ids = torch.zeros((batch_size, max_seq_len), dtype=torch.int64)
-    for i, x_ in enumerate(x):
-        input_ids[i, : len(x_["input_ids"])] = torch.tensor(x_["input_ids"])[
-            :max_seq_len
-        ]
-    labels = torch.full((batch_size, 1), fill_value=-100, dtype=torch.int64)
-    for i, x_ in enumerate(x):
-        labels[i, 0] = torch.tensor(x_["labels"])
-    return {
-        "input_ids": input_ids,
-        "labels": labels,
-    }
-
+def update_instance_contrastive(instance, prompt):
+    instance["positive"] = prompt + instance["positive"]
+    instance["negative"] = prompt + instance["negative"]
+    return instance
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -80,7 +51,7 @@ def parse_args():
         help="Path to dataset file",
     )
     parser.add_argument(
-        "--output_dir",
+        "--output_path",
         type=str,
         default=None,
         help="Path to dataset file",
@@ -94,8 +65,51 @@ def parse_args():
     parser.add_argument(
         "--max_seq_len",
         type=int,
-        default=200,
+        default=None,
         help="Path to dataset file",
+    )
+    parser.add_argument(
+        "--cache_dir",
+        type=str,
+        default=None,
+        help="Path to dataset file",
+    )
+    parser.add_argument("--contrastive", action="store_true")
+    parser.add_argument(
+        "--validation_limit",
+        type=int,
+        default=-1,
+        help="Limits the number of validation batches (for development)",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default='cuda',
+
+    )
+    parser.add_argument(
+        "--dpo_weight",
+        type=int,
+        default=1
+    )
+    parser.add_argument(
+        "--add_eos",
+        action="store_true",
+        help="Whether to add EOS token to end of labels.",
+    )
+    parser.add_argument(
+        "--reg",
+        type=bool,
+        help="Whether to use regularization",
+        default=False,
+        required=False,
+    )
+    parser.add_argument(
+        "--reg_strength",
+        type=float,
+        help="Strength of regularization",
+        default=0,
+        required=False,
     )
     args = parser.parse_args()
     return args
@@ -112,60 +126,58 @@ def main():
         with open(prompt_file, "r") as file:
             prompt = file.read()
             print(prompt)
-        dataset = [update_instance_inputs(example, prompt) for example in dataset]
+        if args.contrastive:
+            dataset = [update_instance_contrastive(example, prompt) for example in dataset]
+            print(dataset[0])
+        else:
+            dataset = [update_instance_inputs(example, prompt) for example in dataset]
+            print(dataset[0])
 
-    print(dataset[0])
-    dataset = [tokenize_example(example, tokenizer) for example in dataset]
+    if args.contrastive:
+        tokenize_fn = contrastive_tokenize_example
+        collate_fn_ = contrastive_collate_fn
+    else:
+        tokenize_fn = functools.partial(tokenize_example, add_eos=args.add_eos)
+        collate_fn_ = collate_fn
 
-    unique_labels = []
-    for example in dataset:
-        labels = example["labels"]
-        unique_labels.extend(labels)
-    unique_labels = list(set(unique_labels))
-    print(unique_labels)
-
-    data_loader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        collate_fn=collate_fn,
-    )
+    dataset = [tokenize_fn(example, tokenizer) for example in dataset]
+    valid_loader = DataLoader(
+            dataset,
+            batch_size=1,
+            shuffle=False,
+            collate_fn=lambda batch: collate_fn_(batch, args.max_seq_len),
+        )
 
     # Model
     model = MambaDecoderForCausalLM.from_pretrained(args.model_name, use_mambapy=True)
+    model.to(args.device, dtype=torch.bfloat16)
+    model.gradient_checkpointing_enable()
     model.eval()
-    model.cuda()
-    device = "cuda"
 
-    correct = 0
-    total = 0
+    if args.cache_dir:
+        encoder_cache_params = TrainableMambaCache(config=model.config, dtype=torch.bfloat16)
+        state_dict = torch.load(os.path.join(args.cache_dir, 'training_state.bin'))
+        encoder_cache_params.load_state_dict(state_dict["model_state_dict"])
+        encoder_cache_params.cuda()
+    else:
+        encoder_cache_params = None
 
-    for idx, batch in enumerate(data_loader):
-        print(idx)
-        batch = {k: v.to(device) for k, v in batch.items()}
-        outputs = model(batch["input_ids"])
-        next_token_logits = outputs.logits[:, -1, :]
-        mask = torch.full_like(
-            next_token_logits, float("-inf")
-        )  # Fill with very negative values to mask out unwanted logits
-        mask[:, unique_labels] = next_token_logits[
-            :, unique_labels
-        ]  # Keep only logits 17 and 18
+    if args.contrastive:
+        _, valid_acc = validate_contrastive(
+            valid_loader, model, args, encoder_cache_params
+        )
+    else:
+        if args.reg:
+            #valid_loss, valid_acc = validate_classification(
+             #   valid_loader, model, args, encoder_cache_params, config, tokenizer, decoder
+            #)
+            print ("Not implemented")
+        else:
+            _, valid_acc = validate_classification(
+                valid_loader, model, args, encoder_cache_params
+            )
 
-        # Get the argmax over the restricted logits
-        preds = mask.argmax(dim=-1)
-
-        correct += (preds == batch["labels"][:, 0]).sum().item()
-        total += len(batch["labels"])
-
-    accuracy = correct / total
-    print(f"Accuracy: {accuracy}")
-
-    if args.output_dir:
-        output_dir = args.output_dir
-        accuracy_file = os.path.join(output_dir, "accuracy.txt")
-        with open(accuracy_file, "w") as file:
-            file.write(f"{accuracy}")
+    print("Validation Acc: " , str(valid_acc))
 
 
 if __name__ == "__main__":

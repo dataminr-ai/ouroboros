@@ -23,6 +23,7 @@ https://huggingface.co/models?filter=text-generation
 # You can also adapt this script on your own causal language modeling task. Pointers for this are left as comments.
 
 import argparse
+import functools
 import logging
 import math
 import os
@@ -39,11 +40,22 @@ from transformers import (
     SchedulerType,
     get_scheduler,
 )
-from transformers.cache_utils import MambaCache
 from transformers.models.mamba import MambaConfig
 from transformers.models.mamba.modeling_mamba import is_fast_path_available
 
-from ouroboros.decode_cache import reconstruct
+import ouroboros.encode_dataset as ed
+from ouroboros.cache_utils import (
+    classification_loss_outputs,
+    collate_fn,
+    contrastive_accuracy_loss,
+    contrastive_collate_fn,
+    contrastive_tokenize_example,
+    load_dataset,
+    tokenize_example,
+    validate_classification,
+    validate_contrastive,
+)
+
 from ouroboros.models import (
     MambaDecoderConfig,
     MambaDecoderForCausalLM,
@@ -73,9 +85,27 @@ def parse_args():
         help="Path to dataset file",
     )
     parser.add_argument(
+        "--validation_file",
+        type=str,
+        default=None,
+        help="Path to dataset file",
+    )
+    parser.add_argument(
+        "--validation_steps",
+        type=int,
+        default=10,
+        help="Number of steps between each validation run",
+    )
+    parser.add_argument(
+        "--eval_file",
+        type=str,
+        default=None,
+        help="Path to dataset file",
+    )
+    parser.add_argument(
         "--max_seq_len",
         type=int,
-        default=200,
+        default=None,
         help="Maximum sequence length for training data",
         required=False,
     )
@@ -187,13 +217,6 @@ def parse_args():
         default=None,
         help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.",
     )
-    # TODO(rlogan): Use or lose
-    parser.add_argument(
-        "--resume_from_checkpoint",
-        type=str,
-        default=None,
-        help="If the training should continue from a checkpoint folder.",
-    )
     parser.add_argument(
         "--batch_size",
         type=int,
@@ -211,36 +234,47 @@ def parse_args():
         default=None,
         help="Prompt to initiate the cache",
     )
-    # TODO(rlogan): Add tracking support.
     parser.add_argument(
-        "--with_tracking",
-        action="store_true",
-        help="Whether to enable experiment trackers for logging.",
-    )
-    parser.add_argument(
-        "--report_to",
+        "--resume_from_checkpoint",
         type=str,
-        default="all",
-        help=(
-            'The integration to report the results and logs to. Supported platforms are `"tensorboard"`,'
-            ' `"wandb"`, `"comet_ml"` and `"clearml"`. Use `"all"` (default) to report to all integrations. '
-            "Only applicable when `--with_tracking` is passed."
-        ),
+        default=None,
+        help="If the training should continue from a checkpoint folder.",
     )
-    # TODO(rlogan): Use or lose.
     parser.add_argument(
-        "--low_cpu_mem_usage",
+        "--add_eos",
         action="store_true",
-        help=(
-            "It is an option to create the model as an empty shell, then only materialize its parameters when the pretrained weights are loaded. "
-            "If passed, LLM loading time and RAM consumption will be benefited."
-        ),
+        help="Whether to add EOS token to end of labels.",
     )
+    parser.add_argument(
+        "--validation_limit",
+        type=int,
+        default=-1,
+        help="Limits the number of validation batches (for development)",
+    )
+    parser.add_argument(
+        "--logging_steps", type=int, default=1, help="Logging frequency"
+    )
+    parser.add_argument(
+        "--dpo_weight", type=int, default=1, help="Logging frequency"
+    )
+    parser.add_argument("--contrastive", action="store_true")
 
     args = parser.parse_args()
 
     return args
 
+def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
+    os.makedirs(checkpoint_path, exist_ok=True)
+    checkpoint_path = os.path.join(checkpoint_path, "training_state.bin")
+    checkpoint = {
+        "epoch": epoch,
+        "step": step,
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "model_state_dict": model.state_dict(),
+    }
+    torch.save(checkpoint, checkpoint_path)
+    logging.info(f"Checkpoint saved at epoch {epoch}, step {step}")
 
 def main():
     args = parse_args()
@@ -253,57 +287,88 @@ def main():
         logger.info(
             "Fast path is not available. Enabling will greatly speed up encoding."
         )
+    summary_writer = SummaryWriter(log_dir=args.output_dir)
 
     tokenizer = AutoTokenizer.from_pretrained(
         args.decoder,
         trust_remote_code=args.trust_remote_code,
     )
 
-    model = MambaDecoderForCausalLM.from_pretrained(args.decoder, use_mambapy=True)
+    model = MambaDecoderForCausalLM.from_pretrained(args.decoder, use_mambapy=True, ignore_mismatched_sizes=True)
+    #model.to(args.device, dtype=torch.bfloat16)
     model.to(args.device)
+    model.gradient_checkpointing_enable()
     model.train()
 
     # Load Dataset
-    dataset = load_dataset_from_files_or_hf(
-        filepaths={
-            "train": args.train_file
-        },
-        split="train",
-    )
-    tokenized_dataset = tokenize_dataset(
-        tokenizer=tokenizer, dataset=dataset, training=True
-    )
+    if args.contrastive:
+        tokenize_fn = contrastive_tokenize_example
+        collate_fn_ = contrastive_collate_fn
+    else:
+        tokenize_fn = functools.partial(tokenize_example, add_eos=args.add_eos)
+        collate_fn_ = collate_fn
+    dataset = load_dataset(args.train_file)
+    dataset = [tokenize_fn(example, tokenizer) for example in dataset]
 
     train_loader = DataLoader(
         tokenized_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        collate_fn=DataCollatorForSeq2Seq(tokenizer=tokenizer, max_length=args.max_seq_len),
+        collate_fn=lambda batch: collate_fn_(batch, args.max_seq_len),
     )
 
-    summary_writer = SummaryWriter(log_dir=args.output_dir)
+    if args.validation_file:
+        validation_dataset = load_dataset(args.validation_file)
+        validation_dataset = [
+            tokenize_fn(example, tokenizer) for example in validation_dataset
+        ]
+        valid_loader = DataLoader(
+            validation_dataset,
+            batch_size=1,
+            shuffle=False,
+            collate_fn=lambda batch: collate_fn_(batch, args.max_seq_len),
+        )
+    if args.eval_file:
+        evaluation_dataset = load_dataset(args.eval_file)
+        evaluation_dataset = [
+            tokenize_fn(example, tokenizer) for example in evaluation_dataset
+        ]
+        eval_loader = DataLoader(
+            evaluation_dataset,
+            batch_size=1,
+            shuffle=False,
+            collate_fn=lambda batch: collate_fn_(batch, args.max_seq_len),
+        )
 
     # Initialize cache
-    if args.starting_prompt is not None:
-        prompt = ["Pick the best option that answers the question.\n"]
-        token_prompt = tokenizer(prompt, return_tensors="pt").to(args.device)
-        with torch.no_grad():
-            encoded_prompt = get_cache_state_for_batch(token_prompt["input_ids"], model)
-        learned_conv_state = encoded_prompt.conv_states
-        learned_ssm_state = encoded_prompt.ssm_states
-    else:
-        learned_conv_state = None
-        learned_ssm_state = None
+    if not args.resume_from_checkpoint:
+        if args.starting_prompt is not None:
+                prompt = [args.starting_prompt]
+                token_prompt = tokenizer(prompt, return_tensors="pt").to(args.device)
+                with torch.no_grad():
+                    encoded_prompt = ed.get_cache_params(token_prompt["input_ids"], model)
+                learned_conv_state = encoded_prompt.conv_states
+                learned_ssm_state = encoded_prompt.ssm_states
+        else:
+            learned_conv_state = None
+            learned_ssm_state = None
 
-    encoder_cache_params = TrainableMambaCache(
-        config=model.config,
-        batch_size=args.batch_size,
-        learned_conv_state=learned_conv_state,
-        learned_ssm_state=learned_ssm_state,
-        device=args.device,
-        dtype=model.dtype,
-    )
-
+        encoder_cache_params = TrainableMambaCache(
+            config=model.config,
+            batch_size=args.batch_size,
+            learned_conv_state=learned_conv_state,
+            learned_ssm_state=learned_ssm_state,
+            device=args.device,
+            dtype=model.dtype,
+        )
+    elif args.resume_from_checkpoint:
+        checkpoint_path = os.path.join(args.output_dir, 'step_'+ args.resume_from_checkpoint)
+        encoder_cache_params = TrainableMambaCache(config=model.config, dtype=model.dtype)
+        state_dict = torch.load(os.path.join(checkpoint_path, 'training_state.bin'))
+        encoder_cache_params.load_state_dict(state_dict["model_state_dict"])
+        encoder_cache_params.to(args.device)
+    
+      
     params_to_optimize = [{"params": encoder_cache_params.parameters()}]
     optimizer = torch.optim.AdamW(
         params_to_optimize, lr=args.learning_rate, weight_decay=args.weight_decay
@@ -327,8 +392,12 @@ def main():
     if checkpointing_steps is not None and checkpointing_steps.isdigit():
         checkpointing_steps = int(checkpointing_steps)
 
-    # TODO(rlogan): Add back checkpointing
-    completed_steps, start_step = 0, 0
+    if not args.resume_from_checkpoint:
+        completed_steps, start_step = 0, 0
+    elif args.resume_from_checkpoint:
+        completed_steps, start_step = int(args.resume_from_checkpoint), int(args.resume_from_checkpoint)
+        optimizer.load_state_dict(state_dict["optimizer_state_dict"])
+        lr_scheduler.load_state_dict(state_dict["scheduler_state_dict"])
 
     # For reconstruction
     if args.reg:
@@ -340,89 +409,151 @@ def main():
         decoder.eval()
         decoder.to(args.device)
 
+    # Base Model Validation and Evaluation
+    if completed_steps == 0:
+        if args.contrastive:
+            valid_loss, valid_acc = validate_contrastive(
+            valid_loader, model, args, encoder_cache_params
+        )
+        else:
+            if args.reg:
+                valid_loss, valid_acc = validate_classification(
+                    valid_loader, model, args, encoder_cache_params, config, tokenizer, decoder
+                )
+            else:
+                valid_loss, valid_acc = validate_classification(
+                    valid_loader, model, args
+                )
+        logger.info("Validation Loss: " + str(valid_loss))
+        logger.info("Validation Acc: " + str(valid_acc))
+        summary_writer.add_scalar(
+            "Loss/valid", valid_loss, completed_steps
+        )
+        summary_writer.add_scalar(
+            "Acc/valid", valid_acc, completed_steps
+        )
+        if args.eval_file:
+            if args.contrastive:
+                eval_loss, eval_acc = validate_contrastive(
+                eval_loader, model, args, encoder_cache_params
+                )
+            else:
+                if args.reg:
+                    eval_loss, eval_acc = validate_classification(
+                        eval_loader, model, args, encoder_cache_params, config, tokenizer, decoder
+                    )
+                else:
+                    eval_loss, eval_acc = validate_classification(
+                        eval_loader, model, args
+                    )
+            logger.info("Eval Loss: " + str(eval_loss))
+            logger.info("Eval Acc: " + str(eval_acc))
+            summary_writer.add_scalar(
+            "Loss/test", eval_loss, completed_steps
+            )
+            summary_writer.add_scalar(
+            "Acc/test", eval_acc, completed_steps
+            )
+
+    model.train()
+
     with tqdm(total=args.max_train_steps, desc="Training Progress") as pbar:
         pbar.update(completed_steps)
         for epoch in range(0, args.num_train_epochs):
             for step, batch in enumerate(train_loader):
                 if step > start_step:
                     batch = {k: v.to(args.device) for k, v in batch.items()}
-
-                    if batch["input_ids"].shape[0] == args.batch_size:
-                        outputs = model(
-                            **batch,
-                            encoder_cache_params=encoder_cache_params,
-                        )
-
-                        if not args.reg:
-                            loss = outputs.loss
+                    batch_size = next(iter(batch.values())).size(0)
+                    encoder_cache_params.resize(batch_size)
+                    if args.contrastive:
+                        _ , _ , loss = contrastive_accuracy_loss(batch, model, encoder_cache_params, args.dpo_weight)
+                    else:
+                        if args.reg:
+                            loss, _ = classification_loss_outputs(batch, model, encoder_cache_params, args, config, tokenizer, decoder)
                         else:
-                            # get learned hidden state...
+                            loss, _ = classification_loss_outputs(batch, model, encoder_cache_params, args)
 
-                            learned_cache_params = MambaCache(
-                                config=config, max_batch_size=1, dtype=model.dtype
-                            )
-                            learned_cache_params.conv_states = (
-                                encoder_cache_params.learned_conv_state.detach().clone()
-                            )
-                            learned_cache_params.ssm_states = (
-                                encoder_cache_params.learned_ssm_state.detach().clone()
-                            )
+                    loss.backward()
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
 
-                            # reconstructed state encoder(decoder(learned_cache_params))
-                            decoded_cache = reconstruct(
-                                decoder, tokenizer, learned_cache_params
-                            ).to(args.device)
-                            with torch.no_grad():
-                                recon_cache_params = get_cache_state_for_batch(
-                                    decoded_cache, model
-                                )
 
-                            # define distance function
-                            ssm_dist = torch.norm(
-                                learned_cache_params.ssm_states
-                                - recon_cache_params.ssm_states
-                            )
-                            conv_dist = torch.norm(
-                                learned_cache_params.conv_states
-                                - recon_cache_params.conv_states
-                            )
-
-                            # Loss
-                            loss = outputs.loss + args.reg_strength * (
-                                ssm_dist + conv_dist
-                            )
-
+                    completed_steps += 1
+                    pbar.update(1)
+                    if completed_steps % args.logging_steps == 0:
                         summary_writer.add_scalar(
-                            "train/loss", loss.item(), completed_steps
+                            "Loss/train", loss.item(), completed_steps
                         )
                         summary_writer.add_scalar(
-                            "train/memory",
-                            torch.cuda.memory_allocated(),
+                            "Memory",
+                            torch.cuda.memory_allocated(args.device),
                             completed_steps,
                         )
 
-                        loss.backward()
+                    if completed_steps % checkpointing_steps == 0:
+                        output_dir = f"step_{completed_steps}"
+                        if args.output_dir is not None:
+                            output_dir = os.path.join(args.output_dir, output_dir)
+                        logging.info(
+                            "Saving Checkpoint at Step"
+                            + str(completed_steps)
+                            + " in directory "
+                            + str(output_dir)
+                        )
+                        save_checkpoint(
+                            encoder_cache_params,
+                            optimizer,
+                            lr_scheduler,
+                            epoch,
+                            step,
+                            output_dir,
+                        )
 
-                        optimizer.step()
-                        lr_scheduler.step()
-                        optimizer.zero_grad()
-
-                        completed_steps += 1
-                        pbar.update(1)
-
-                        if completed_steps % checkpointing_steps == 0:
-                            output_dir = f"step_{completed_steps}"
-                            if args.output_dir is not None:
-                                output_dir = os.path.join(args.output_dir, output_dir)
-                            save_checkpoint(
-                                model=encoder_cache_params,
-                                optimizer=optimizer,
-                                scheduler=lr_scheduler,
-                                epoch=epoch,
-                                step=step,
-                                checkpoint_path=output_dir,
+                    if completed_steps % args.validation_steps == 0:
+                        if args.contrastive:
+                            valid_loss, valid_acc = validate_contrastive(
+                                valid_loader, model, args, encoder_cache_params
                             )
-                            # TODO(rlogan): Add eval
+                        else:
+                            if args.reg:
+                                valid_loss, valid_acc = validate_classification(
+                                    valid_loader, model, args, encoder_cache_params, config, tokenizer, decoder
+                                )
+                            else:
+                                valid_loss, valid_acc = validate_classification(
+                                    valid_loader, model, args, encoder_cache_params
+                                )
+                        summary_writer.add_scalar(
+                            "Loss/valid", valid_loss, completed_steps
+                        )
+                        summary_writer.add_scalar(
+                            "Acc/valid", valid_acc, completed_steps
+                        )
+                        if args.eval_file:
+                            if args.contrastive:
+                                eval_loss, eval_acc = validate_contrastive(
+                                eval_loader, model, args, encoder_cache_params
+                                )
+                            else:
+                                if args.reg:
+                                    eval_loss, eval_acc = validate_classification(
+                                        eval_loader, model, args, encoder_cache_params, config, tokenizer, decoder
+                                    )
+                                else:
+                                    eval_loss, eval_acc = validate_classification(
+                                        eval_loader, model, args, encoder_cache_params
+                                    )
+                            logger.info("Test Loss: " + str(eval_loss))
+                            logger.info("Test Acc: " + str(eval_acc))
+                            summary_writer.add_scalar(
+                            "Loss/test", eval_loss, completed_steps
+                            )
+                            summary_writer.add_scalar(
+                            "Acc/test", eval_acc, completed_steps
+                            )
+                        model.train()
+
     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
     save_checkpoint(
         model=encoder_cache_params,

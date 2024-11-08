@@ -1,59 +1,24 @@
 import argparse
-import gc
 import json
 import logging
 import os
-import re
 
-import datasets
-import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, MambaForCausalLM
 
 import ouroboros.encode_dataset as ed
+from ouroboros.decoder_utils import (
+    extract_step_number,
+    score_dataset,
+)
 from ouroboros.models import MambaDecoderConfig, MambaDecoderForCausalLM
 
 
 AutoModelForCausalLM.register(MambaDecoderConfig, MambaDecoderForCausalLM)
 
 
-def reconstruct(model, tokenizer, cache_params, chunk_size):
-    input_ids = torch.full((cache_params.conv_states.size(1), 1), tokenizer.bos_token_id, device=cache_params.conv_states.device)
-    cache_position = torch.tensor([3], device=input_ids.device)
-    generated = []
-    for idx in range(chunk_size + 1):
-        with torch.no_grad():
-            outputs = model(
-                input_ids=input_ids,
-                cache_params=cache_params,
-                cache_position=cache_position,  # NOTE(rlogan): What next though?
-                use_cache=True,
-                output_dict=True,
-            )
-        input_ids = outputs.logits.argmax(dim=-1)
-        cache_params = outputs.cache_params
-        cache_position = cache_position[-1:] + 1
-        generated.append(input_ids.to("cpu"))
-    generated = torch.cat(generated, dim=-1).to("cpu")
-    recons = tokenizer.batch_decode(generated, skip_special_tokens=True)
-    del input_ids, cache_params, cache_position, outputs, generated
-    torch.cuda.empty_cache()
-    gc.collect()
-    return recons
-
-
-def extract_step_number(path):
-    match = re.search(r"step_(\d+)", path)
-    if match:
-        return int(match.group(1))
-    else:
-        return 0
-
-
 def main(
     base_model, eval_file, chunk_size, batch_size, output_dir, ckpt_path
 ):
-    metric = datasets.load_metric("rouge", trust_remote_code=True)  # Load metric
-
     tokenizer = AutoTokenizer.from_pretrained(base_model)  # Load Tokenizer
 
     # Load Encoder
@@ -74,48 +39,20 @@ def main(
     # Load Dataset
     raw_dataset = ed.read_dataset(eval_file)
     tokenized_dataset = ed.tokenize_dataset(raw_dataset, tokenizer)
-    chunked_dataset = ed.chunk_dataset(tokenized_dataset, chunk_size)
-    batched_chunks = ed.batch_chunks(
-        chunked_dataset, batch_size
-    )
 
-    # Reconstruct text using decoder
-    reconstructed = []
-    for idx, batch in enumerate(batched_chunks):
-        print("Idx, ", idx)
-        with torch.no_grad():
-            input_ids = batch["input_ids"].to("cuda")
-            cache_params = ed.get_cache_params(input_ids, encoder)
-        recons = reconstruct(model, tokenizer, cache_params, chunk_size)
-        reconstructed.append(recons)
-        del batch, recons, cache_params
-        torch.cuda.empty_cache()
-        gc.collect()
-        print(torch.cuda.memory_allocated())
-
-    # Score
-    comparison={'reference':[], 'reconstructed':[]}
-    for idx, batch in enumerate(batched_chunks):
-        reference_text = tokenizer.batch_decode(
-            batch["input_ids"], skip_special_tokens=True
-        )
-        reconstructed_text = reconstructed[idx]
-        comparison['reference'].extend(reference_text)
-        comparison['reconstructed'].extend(reconstructed_text)
-        metric.add(predictions=[reconstructed_text], references=[reference_text])
-
+    # Compute metric
+    score, comparison  = score_dataset(model, tokenizer, encoder, tokenized_dataset, chunk_size, batch_size)
+    
+    #Write output
     comparison_json = json.dumps(comparison, indent=4)
     output_file = os.path.join(output_dir, str(midx) + "_decoded.json")
     with open(output_file, "w") as file:
         file.write(comparison_json)
 
-    score = metric.compute()
-
     json_data = json.dumps(score, indent=4)
     output_file = os.path.join(output_dir, str(midx) + "_rouge.json")
     with open(output_file, "w") as file:
         file.write(json_data)
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
