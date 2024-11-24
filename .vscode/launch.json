@@ -12,6 +12,16 @@
             "justMyCode": false,
         },
         {
+            "name": "Run Dataset Tests",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "justMyCode": false,
+            "args": [
+                "tests/datasets/test_dataset.py"
+            ]
+        },
+        {
             "name": "Python Debugger: Current File",
             "type": "debugpy",
             "request": "launch",
@@ -51,7 +61,7 @@
                 "--train_file", "data/cnn_daily_mail/train.jsonl", 
                 "--validation_file", "data/cnn_daily_mail/validation.jsonl",
                 "--validation_steps", "1", 
-                "--max_seq_len", "200",
+                "--max_seq_len", "500",
                 "--decoder", "state-spaces/mamba-130m-hf",
                 "--output_dir", "ckpt/cnn-daily-mail-130m-generative/",
                 "--batch_size", "16",

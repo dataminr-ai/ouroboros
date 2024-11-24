@@ -561,7 +561,8 @@ def main():
                         batch_loss, outputs = train_step(batch)
                         preds = outputs.logits.argmax(dim=-1)
                         original_labels = batch["labels"]
-                        rouge_score = rouge(predictions=preds, references=original_labels, use_aggregator=True)
+                        
+                        rouge_score = rouge.compute(predictions=preds, references=original_labels, use_aggregator=True)
                         rouge_scores.append(rouge_score)
                     else:
                         batch_loss, outputs = train_step(batch)

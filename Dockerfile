@@ -35,6 +35,6 @@ WORKDIR /opt/
 
 ## Setup env
 RUN pip install build wheel torch==2.3.1
-RUN pip install -e ".[fast]"
+RUN pip install -e ".[fast, dev]"
 
 ENTRYPOINT ["/bin/bash"]

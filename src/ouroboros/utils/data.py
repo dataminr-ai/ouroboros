@@ -58,7 +58,8 @@ def tokenize_example(
         label_pad_token_id: int = -100,
         add_eos: bool = False,
         training: bool = False,
-        max_seq_len: Optional[int] = None
+        max_seq_len: Optional[int] = None,
+        
     ):
     tokenized_inputs = tokenizer(
         example["inputs"],
