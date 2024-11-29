@@ -61,7 +61,7 @@
                 "--train_file", "data/cnn_daily_mail/train.jsonl", 
                 "--validation_file", "data/cnn_daily_mail/validation.jsonl",
                 "--validation_steps", "1", 
-                "--max_seq_len", "500",
+                "--max_seq_len", "512",
                 "--decoder", "state-spaces/mamba-130m-hf",
                 "--output_dir", "ckpt/cnn-daily-mail-130m-generative/",
                 "--batch_size", "16",

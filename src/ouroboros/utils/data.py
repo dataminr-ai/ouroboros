@@ -86,7 +86,7 @@ def tokenize_example(
         input_ids = tokenized_inputs["input_ids"]
         labels = tokenized_label["input_ids"] if tokenized_label else None
 
-    return {"input_ids": input_ids, "labels": labels}
+    return {"input_ids": input_ids[:max_seq_len], "labels": labels[:max_seq_len]}
 
 def tokenize_example_for_contrastive_task(example: Dict[str, Any], tokenizer: PreTrainedTokenizerBase, max_seq_len: Optional[int] = None):
     positive_input_ids = tokenizer(

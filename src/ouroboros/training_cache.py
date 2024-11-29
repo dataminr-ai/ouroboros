@@ -26,6 +26,7 @@ import argparse
 import logging
 import math
 import os
+from collections import defaultdict
 
 import evaluate
 import torch
@@ -533,7 +534,7 @@ def main():
         loss = 0
         total = 0
         steps = 0
-        rouge_scores = []
+        metrics_dict = defaultdict(int)
         learned_cache_params = MambaCache(
             config=model.config, max_batch_size=1, dtype=model.dtype
         )
@@ -556,14 +557,6 @@ def main():
                         preds = diff > 0
                         acc_num += preds.sum().item()
                         acc_denom += preds.size(0)
-                    elif args.generative:
-                        assert rouge is not None, "Metric not loaded"
-                        batch_loss, outputs = train_step(batch)
-                        preds = outputs.logits.argmax(dim=-1)
-                        original_labels = batch["labels"]
-                        
-                        rouge_score = rouge.compute(predictions=preds, references=original_labels, use_aggregator=True)
-                        rouge_scores.append(rouge_score)
                     else:
                         batch_loss, outputs = train_step(batch)
                         # NOTE(rlogan): This is a kludge. We shouldn't teacher force.
@@ -571,24 +564,40 @@ def main():
                         labels = batch["labels"][:, 1:]
                         preds = outputs.logits.argmax(dim=-1)[:, :-1]
                         # Next, we need to ignore all of the non-label token predictions
-                        preds[labels == -100] = -100
-                        # Finally, the accuracy is where the pred-label equal token count equals the sequence length.
-                        acc_num += (
-                            ((preds == labels).sum(dim=-1) == labels.size(1))
-                            .sum()
-                            .item()
-                        )
-                        acc_denom += labels.size(0)
+                        if args.generative:
+                            pred_texts = tokenizer.batch_decode(torch.where(preds == -100, 0, preds), skip_special_tokens=True)
+                            original_texts = tokenizer.batch_decode(torch.where(labels == -100, 0, labels), skip_special_tokens=True)
+                            rouge_scores = rouge.compute(predictions=pred_texts, references=original_texts, use_aggregator=True)
+                            for k, v in rouge_scores.items():
+                                metrics_dict[k] += v
+                        else:
+                            preds[labels == -100] = -100
+                            # Finally, the accuracy is where the pred-label equal token count equals the sequence length.
+
+                            acc_num += (
+                                ((preds == labels).sum(dim=-1) == labels.size(1))
+                                .sum()
+                                .item()
+                            )
+                            acc_denom += labels.size(0)
                     loss += batch_loss.item()
                     total += 1  # This should probably be normalized by batch size
                     steps += 1
                     pbar.update(1)
 
         valid_loss = loss / total
-        valid_acc = acc_num / (acc_denom + 1e-13)
-        logger.info("Validation Loss: " + str(valid_loss))
-        logger.info("Validation Acc: " + str(valid_acc))
-        return valid_loss, valid_acc
+
+        if args.generative:
+            for k,v in metrics_dict.items():
+                metrics_dict[k] = v/total
+
+            logger.info(f"Validation Metrics: {metrics_dict}")
+        else:
+            valid_acc = acc_num / (acc_denom + 1e-13)
+            metrics_dict["acc"] = valid_acc
+            logger.info("Validation Loss: " + str(valid_loss))
+            logger.info("Validation Acc: " + str(valid_acc))
+        return valid_loss, metrics_dict
 
     with tqdm(total=max_train_steps, desc="Training Progress") as pbar:
         pbar.update(completed_steps)
@@ -640,14 +649,16 @@ def main():
                 )
 
             if completed_steps % args.validation_steps == 0:
-                valid_loss, valid_acc = validate()
+                valid_loss, metrics_dict = validate()
                 summary_writer.add_scalar(
                     "Loss/valid", valid_loss, completed_steps
                 )
-                summary_writer.add_scalar(
-                    "Acc/valid", valid_acc, completed_steps
-                )
+                for k, v in metrics_dict.items():
+                    summary_writer.add_scalar(
+                        f"{k}/valid", v, completed_steps
+                    )
                 model.train()
+            step += 1
     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
     save_checkpoint(
         model=encoder_cache_params,
