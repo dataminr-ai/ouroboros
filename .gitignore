@@ -130,3 +130,6 @@ eggs/
 *.egg*
 venv
 *.jsonl
+
+data
+cache

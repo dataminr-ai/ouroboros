@@ -22,6 +22,7 @@ def tokenize_dataset(dataset, tokenizer):
 
 
 def chunk_dataset(tokenized_dataset, block_size):
+    ## drops the last few tokens if it doesn't fit in block size.
     block_size = block_size  # Make room for bos_token
     concatenated_input_ids = torch.cat(
         [tokens["input_ids"][0] for tokens in tokenized_dataset], dim=0

@@ -22,6 +22,7 @@ dependencies = [
     "torch",
     "tqdm",
     "transformers",
+    "datasets",
 ]
 
 [project.optional-dependencies]

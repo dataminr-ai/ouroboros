@@ -36,6 +36,7 @@ from transformers import (
     MODEL_MAPPING,
     AutoModelForCausalLM,
     AutoTokenizer,
+    DataCollatorForSeq2Seq,
     SchedulerType,
     get_scheduler,
 )
@@ -54,11 +55,14 @@ from ouroboros.cache_utils import (
     validate_classification,
     validate_contrastive,
 )
+
 from ouroboros.models import (
     MambaDecoderConfig,
     MambaDecoderForCausalLM,
     TrainableMambaCache,
 )
+from ouroboros.utils.data import load_dataset_from_files_or_hf, tokenize_dataset
+from ouroboros.utils.model import get_cache_state_for_batch, save_checkpoint
 
 
 AutoModelForCausalLM.register(MambaDecoderConfig, MambaDecoderForCausalLM)
@@ -259,7 +263,6 @@ def parse_args():
 
     return args
 
-
 def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
     os.makedirs(checkpoint_path, exist_ok=True)
     checkpoint_path = os.path.join(checkpoint_path, "training_state.bin")
@@ -272,7 +275,6 @@ def save_checkpoint(model, optimizer, scheduler, epoch, step, checkpoint_path):
     }
     torch.save(checkpoint, checkpoint_path)
     logging.info(f"Checkpoint saved at epoch {epoch}, step {step}")
-
 
 def main():
     args = parse_args()
@@ -309,7 +311,7 @@ def main():
     dataset = [tokenize_fn(example, tokenizer) for example in dataset]
 
     train_loader = DataLoader(
-        dataset,
+        tokenized_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         collate_fn=lambda batch: collate_fn_(batch, args.max_seq_len),
@@ -476,10 +478,10 @@ def main():
                             loss, _ = classification_loss_outputs(batch, model, encoder_cache_params, args)
 
                     loss.backward()
-
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
+
 
                     completed_steps += 1
                     pbar.update(1)
@@ -565,15 +567,15 @@ def main():
                             "Acc/test", eval_acc, completed_steps
                             )
                         model.train()
+
     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
     save_checkpoint(
-        encoder_cache_params, optimizer, lr_scheduler, epoch, step, output_dir
-    )
-    logging.info(
-        "Saving final checkpoint for epoch "
-        + str(epoch)
-        + "in directory "
-        + str(output_dir)
+        model=encoder_cache_params,
+        optimizer=optimizer,
+        scheduler=lr_scheduler,
+        epoch=epoch,
+        step=step,
+        checkpoint_path=output_dir,
     )
 
 

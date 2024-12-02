@@ -212,13 +212,13 @@ def parse_args():
     parser.add_argument(
         "--chunk_size",
         type=int,
-        default = None,
+        default=None,
         help="Sequence Length for fixed sequence length training",
     )
     parser.add_argument(
         "--mixed_chunk",
         type=bool,
-        default = False,
+        default=False,
         help="Whether to use mixed chunk sizes",
     )
     parser.add_argument(
@@ -279,9 +279,11 @@ def main():
     args = parse_args()
     summary_writer = SummaryWriter(log_dir=args.output_dir)
     if is_fast_path_available:
-        logger.info('Fast path is available.')
+        logger.info("Fast path is available.")
     else:
-        logger.info('Fast path is not available. Enabling will greatly speed up encoding.')
+        logger.info(
+            "Fast path is not available. Enabling will greatly speed up encoding."
+        )
 
     tokenizer = AutoTokenizer.from_pretrained(
         args.decoder,
@@ -297,14 +299,16 @@ def main():
             use_mambapy=True,
         )
     elif args.resume_from_checkpoint:
-        checkpoint_path = os.path.join(args.output_dir, 'step_'+ args.resume_from_checkpoint)
+        checkpoint_path = os.path.join(
+            args.output_dir, "step_" + args.resume_from_checkpoint
+        )
         model = MambaDecoderForCausalLM.from_pretrained(
             checkpoint_path,
             low_cpu_mem_usage=args.low_cpu_mem_usage,
             trust_remote_code=args.trust_remote_code,
             use_mambapy=True,
         )
-        state_path = os.path.join(checkpoint_path, 'training_state.bin')
+        state_path = os.path.join(checkpoint_path, "training_state.bin")
         checkpoint = torch.load(state_path)
     logger.info(model.config.to_dict())
     logger.info(model)
@@ -322,6 +326,8 @@ def main():
     encoder.to(args.device)
     #encoder.to(args.device, dtype=torch.bfloat16)
 
+    summary_writer = SummaryWriter(log_dir=args.output_dir)
+
     # Load Dataset
     raw_dataset = ed.read_dataset(args.train_file)
     tokenized_dataset = ed.tokenize_dataset(raw_dataset, tokenizer)
@@ -332,14 +338,13 @@ def main():
 
     if not args.mixed_chunk:
         chunked_dataset = ed.chunk_dataset(tokenized_dataset, args.chunk_size)
-        batched_chunks = ed.batch_chunks(
-            chunked_dataset, args.batch_size
-        )
+        batched_chunks = ed.batch_chunks(chunked_dataset, args.batch_size)
     else:
         chunked_dataset = ed.chunk_dataset_varied(tokenized_dataset, args.mixed_min, args.mixed_max)
         batched_chunks = ed.batch_chunks_varied(
         chunked_dataset, args.batch_size
     )
+
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
@@ -392,7 +397,10 @@ def main():
     if not args.resume_from_checkpoint:
         completed_steps, start_step = 0, 0
     elif args.resume_from_checkpoint:
-        completed_steps, start_step = int(args.resume_from_checkpoint), int(args.resume_from_checkpoint)
+        completed_steps, start_step = (
+            int(args.resume_from_checkpoint),
+            int(args.resume_from_checkpoint),
+        )
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         lr_scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
     
@@ -427,9 +435,10 @@ def main():
                             batch = ed.pad_batch_varied(batch)
                     logger.info(cache_params)
 
-                    logger.info("Forward")
-                    input_ids = F.pad(batch['input_ids'], (1, 1), value=tokenizer.eos_token_id)
-                    logger.info(batch['input_ids'].device)
+
+                    input_ids = F.pad(
+                        batch["input_ids"], (1, 1), value=tokenizer.eos_token_id
+                    )
                     outputs = model(
                         input_ids=input_ids,
                         encoder_cache_params=cache_params,
@@ -438,10 +447,13 @@ def main():
                     )
                     loss = outputs.loss
 
-                    logger.info("Loss: " + str(loss.item()))
-                    logger.info("Memory: " + str(torch.cuda.memory_allocated()) + "\n")
+                    summary_writer.add_scalar(
+                        "train/loss", loss.item(), completed_steps
+                    )
+                    summary_writer.add_scalar(
+                        "train/memory", torch.cuda.memory_allocated(), completed_steps
+                    )
 
-                    logger.info("Backprop")
                     loss.backward()
                     optimizer.step()
                     lr_scheduler.step()
@@ -457,15 +469,10 @@ def main():
                         output_dir = f"step_{completed_steps}"
                         if args.output_dir is not None:
                             output_dir = os.path.join(args.output_dir, output_dir)
-                        logging.info(
-                            "Saving Checkpoint at Step"
-                            + str(completed_steps)
-                            + " in directory "
-                            + str(output_dir)
-                        )
                         save_checkpoint(
                             model, optimizer, lr_scheduler, epoch, step, output_dir
                         )
+                        # TODO(rlogan): Add eval.
                     if completed_steps >= args.max_train_steps:
                         break
                     if args.validation_file:
