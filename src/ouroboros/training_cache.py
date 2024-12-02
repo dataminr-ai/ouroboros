@@ -408,6 +408,7 @@ def main():
         decoder.to(args.device)
 
     # Base Model Validation and Evaluation
+    '''
     if completed_steps == 0:
         if args.contrastive:
             valid_loss, valid_acc = validate_contrastive(
@@ -452,7 +453,7 @@ def main():
             summary_writer.add_scalar(
             "Acc/test", eval_acc, completed_steps
             )
-
+'''
     model.train()
 
     with tqdm(total=args.max_train_steps, desc="Training Progress") as pbar:
@@ -464,7 +465,10 @@ def main():
                     batch_size = next(iter(batch.values())).size(0)
                     encoder_cache_params.resize(batch_size)
                     if args.contrastive:
-                        _ , _ , loss = contrastive_accuracy_loss(batch, model, encoder_cache_params, args.dpo_weight)
+                        if args.reg:
+                            _ , _ , loss = contrastive_accuracy_loss(batch, model, args, encoder_cache_params, config, tokenizer, decoder)
+                        else:
+                            _ , _ , loss = contrastive_accuracy_loss(batch, model, args, encoder_cache_params)
                     else:
                         if args.reg:
                             loss, _ = classification_loss_outputs(batch, model, encoder_cache_params, args, config, tokenizer, decoder)
@@ -510,7 +514,12 @@ def main():
 
                     if completed_steps % args.validation_steps == 0:
                         if args.contrastive:
-                            valid_loss, valid_acc = validate_contrastive(
+                            if args.reg:
+                                valid_loss, valid_acc = validate_contrastive(
+                                    valid_loader, model, args, encoder_cache_params,  config, tokenizer, decoder
+                                )
+                            else:
+                                valid_loss, valid_acc = validate_contrastive(
                                 valid_loader, model, args, encoder_cache_params
                             )
                         else:
@@ -530,7 +539,12 @@ def main():
                         )
                         if args.eval_file:
                             if args.contrastive:
-                                eval_loss, eval_acc = validate_contrastive(
+                                if args.reg:
+                                    eval_loss, eval_acc = validate_contrastive(
+                                        eval_loader, model, args, encoder_cache_params, config, tokenizer, decoder
+                                    )
+                                else:
+                                    eval_loss, eval_acc = validate_contrastive(
                                 eval_loader, model, args, encoder_cache_params
                                 )
                             else:
