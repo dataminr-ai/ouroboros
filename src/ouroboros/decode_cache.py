@@ -4,7 +4,7 @@ import torch
 from transformers import AutoTokenizer
 from transformers.cache_utils import MambaCache
 
-from ouroboros.evaluate import reconstruct_text
+from ouroboros.decoder_utils import reconstruct_text
 from ouroboros.models import (
     MambaDecoderForCausalLM,
     TrainableMambaCache,
