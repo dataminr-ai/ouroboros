@@ -65,3 +65,8 @@ python eval_analysis/connl/ner_analysis.py --connl_reference </path/to/connl256.
                         --connl_generated </path/to/generated.jsonl> \
                         --output_path </path/to/analysis.csv>
 ```
+
+# Paper
+[Characterizing Mamba's Selective Memory using Auto-Encoders](https://arxiv.org/abs/2512.15653)
+AACL 2025. Oral Presentation.
+Tamanna Hossain, Robert L. Logan IV, Ganesh Jagadeesan, Sameer Singh, Joel Tetreault, Alejandro Jaimes
